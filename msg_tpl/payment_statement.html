@@ -1,0 +1,34 @@
+<div>
+  <div>
+    <table style="margin-top:1px;padding-bottom:5px;width: 100%;border: hidden;">
+      <tr>
+        <td>
+          <div>
+            <img src="https://afc.org/wp-content/uploads/2025/01/afc_mailing_logo.png" height="90px" width="450px">
+          </div>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+  <p>Date: {$smarty.now|date_format}</p>
+  <p>Dear {contact.addressee_display},</p>
+  <p>{$address}</p>
+  <p>Thank you for partnering with the AFC to support and challenge families to grow in holines, grow in th truth, and grow together in Christ. Your contributions this past year, noted below, are greatly appreicated. May the Holy Family richely bless you for your sacrifices.</p>
+
+  <table class="table" style="width: 500px;" border="1" cellspacing="0" cellpadding="2" align="left">
+    <tr>
+      <th>Contribution Date</th>
+      <th>Contribution Amount</th>
+    </tr>
+    {foreach from=$contributions item=contribution}
+    <tr>
+      <td>{$contribution.receive_date|crmDate}</td>
+      <td>{$contribution.total_amount|crmMoney}</td>
+    </tr>
+    {/foreach}
+  </table>
+
+  <p>Total Amount : {$totalAmount|crmMoney}</p>
+  <p>If you have any questions, please call (800) FOR-MARY or (740) 567-7700 or email development@afc.org. Glod bless!</p>
+</div>

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Payment Statement</title>
+</head>
+<body>
+<p>Dear {contact.addressee_display},<p>
+
+<p>I hope this email finds you well. Please find attached your <strong>{$frequency} Payment Statement</strong> for the {$type} {$period}. This statement provides a summary of all payments made during the period.</p>
+
+<p>Statement Details:</p>
+<p>Name: {$displayName}</p>
+<p>Statement Period: {$paymentStartDate} – {$paymentEndDate}</p>
+
+<p>If you have any questions or require further clarification, please feel free to reach out.</p>
+
+<p>Thank you for your continued trust and partnership.</p>
+
+<p>Best regards,<br/>
+  {domain.name}</p>
+</body>
+</html>
