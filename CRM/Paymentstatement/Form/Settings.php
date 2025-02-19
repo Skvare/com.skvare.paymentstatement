@@ -18,6 +18,7 @@ class CRM_Paymentstatement_Form_Settings extends CRM_Core_Form {
     $attribute = ['rows' => 100, 'cols' => 100, 'class' => 'collapsed'];
     $this->add('text', 'paymentstatement_logo', 'Logo URL/Path', ['size' => 100,
       'maxlength' => 100,], FALSE);
+    $this->addEntityRef('paymentstatement_contact_id', ts('Log Activity Againt this contact for shared Email PDF'), ['create' => TRUE, 'api' => ['extra' => ['email']]], TRUE);
     $this->add('text', 'paymentstatement_default_email', 'Default Email (if contact does not have email)',
       ['size' => 100, 'maxlength' => 100,], FALSE);
     $this->add('textarea', 'paymentstatement_custom_css', 'CSS Block', [], FALSE);

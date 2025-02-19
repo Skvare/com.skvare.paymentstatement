@@ -49,12 +49,15 @@ class CRM_Paymentstatement_Utils {
     if (!empty($settings['paymentstatement_default_email'])) {
       $this->_intitParams['paymentstatement_default_email'] = $settings['paymentstatement_default_email'];
     }
+    $domainValues = CRM_Core_BAO_Domain::getNameAndEmail();
+    $this->_intitParams['from'] = "$domainValues[0] <$domainValues[1]>";
+
     // Get all contributions for the current year
     $currentYear = date('Y');
     $contributions = \Civi\Api4\Contribution::get(TRUE)
       ->addSelect('id', 'contact_id', 'total_amount', 'receive_date')
       ->addJoin('Contact AS contact', 'INNER')
-      //->addWhere('contribution_status_id', 'IN', [1, 8]) // Completed,// Partial.
+      ->addWhere('contribution_status_id', 'IN', [1, 8]) // Completed,// Partial.
       ->addWhere('contact.contact_type', '=', 'Individual')
       ->addWhere('is_test', '=', FALSE)
       ->addWhere('total_amount', '>', 0)
@@ -77,6 +80,7 @@ class CRM_Paymentstatement_Utils {
       ->addWhere('contribution.is_test', '=', FALSE)
       ->addWhere('contribution.total_amount', '>', 0)
       ->addWhere('contribution.receive_date', 'BETWEEN', ["{$from}", "{$to}"])
+      ->addWhere('contribution.contribution_status_id', 'IN', [1, 8]) // Completed,// Partial.
       ->setLimit(0)
       ->execute()->getArrayCopy();
     foreach ($contributionSofts as $contributionSoft) {
@@ -122,8 +126,9 @@ class CRM_Paymentstatement_Utils {
       [$html, $paymentStatementPdfFile] = $this->generatePdfStatementForContact($contactId, $contribution, $contributionsSumByContacts[$contactId]['total_amount']);
       $htmlArray[$contactId] = $html;
     }
+    $sharedContactID = $settings['paymentstatement_contact_id'] ?? NULL;
     if (!empty($htmlArray)) {
-      $this->generateEmailforPayment('file', NULL, $htmlArray);
+      $this->generateEmailforPayment('file', $sharedContactID, $htmlArray);
     }
   }
 
@@ -160,7 +165,7 @@ class CRM_Paymentstatement_Utils {
   private function getContactContributionRecord($contactID) {
     $contributions = \Civi\Api4\Contribution::get(TRUE)
       ->addSelect('id', 'contact_id', 'total_amount', 'receive_date')
-      //->addWhere('contribution_status_id', 'IN', [1, 8]) // Completed,// Partial.
+      ->addWhere('contribution_status_id', 'IN', [1, 8]) // Completed,// Partial.
       ->addWhere('is_test', '=', FALSE)
       ->addWhere('total_amount', '>', 0)
       ->addWhere('contact_id', '=', $contactID)
@@ -182,6 +187,7 @@ class CRM_Paymentstatement_Utils {
       ->addWhere('contact_id', '=', $contactID)
       ->addWhere('contribution.total_amount', '>', 0)
       ->addWhere('contribution.receive_date', 'BETWEEN', ["{$from}", "{$to}"])
+      ->addWhere('contribution.contribution_status_id', 'IN', [1, 8]) // Completed,// Partial.
       ->setLimit(0)
       ->execute()->getArrayCopy();
     foreach ($contributionSofts as $contributionSoft) {
@@ -203,7 +209,7 @@ class CRM_Paymentstatement_Utils {
    * @throws CRM_Core_Exception
    */
   private function generateEmailforPayment($type = 'file', $contactId = NULL, $html = '', $paymentStatementPdfFile = '') {
-    $pdfFileName = $this->_frequency . '_Statement_' . $this->_type . '.pdf';
+    $pdfFileName = $this->_frequency . '_Statement_' . $this->_type . '_' . rand() . '.pdf';
     $email = NULL;
     if ($contactId) {
       $email = CRM_Contact_BAO_Contact::getPrimaryEmail($contactId);
@@ -218,8 +224,7 @@ class CRM_Paymentstatement_Utils {
         'contactID' => $contactId,
       ],
     ];
-    $fromEmailAddress = 'system@skvare.com';
-    $sendTemplateParams['from'] = $fromEmailAddress;
+    $sendTemplateParams['from'] = $this->_intitParams['from'];
     $sendTemplateParams['toEmail'] = $email ?? $this->_intitParams['paymentstatement_default_email'];
     if (empty($sendTemplateParams['attachments'])) {
       $sendTemplateParams['attachments'] = [];
@@ -235,7 +240,10 @@ class CRM_Paymentstatement_Utils {
     [$sent, $subject, $message, $html] = CRM_Core_BAO_MessageTemplate::sendTemplate($sendTemplateParams);
     if ($sent && $contactId) {
       // Create Activity for Payment Printing..., Attached PDF to Activity.
-      $subject = $this->_frequency . ' Statement ' . $this->_period;
+      $subject = $this->_frequency . ' Payment Statement ' . $this->_period;
+      if ($type == 'file') {
+        $subject .= ' (Common PDF)';
+      }
       $activityDetail = '';
       if (!empty($html)) {
         preg_match("/<body[^>]*>(.*?)<\/body>/is", $html, $matches);
@@ -244,7 +252,7 @@ class CRM_Paymentstatement_Utils {
         }
       }
       $activityParams = [
-        'subject' => 'Payment Statement Email',
+        'subject' => $subject,
         'source_contact_id' => $contactId,
         'target_contact_id' => $contactId,
         'activity_type_id' => CRM_Core_PseudoConstant::getKey('CRM_Activity_BAO_Activity', 'activity_type_id', 'Email'),
@@ -336,15 +344,14 @@ class CRM_Paymentstatement_Utils {
       'details' => $activityDetail,
     ];
 
-    $pdfFileName = $this->_frequency . '_Statement_' . $this->_type . '.pdf';
+    $pdfFileName = $this->_frequency . '_Statement_' . $this->_type. '_' . rand() . '.pdf';
     $paymentStatementPdfFile = CRM_Utils_Mail::appendPDF($pdfFileName, $html, $this->_pdfFormat);
 
     // Attach pdf file to activity
     if (!empty($paymentStatementPdfFile)) {
       $config = CRM_Core_Config::singleton();
       // make file name unique, in case of re-printing, file should not be overwrite.
-      $datetime = date('Ymd-Gi');
-      $name = "Payment-" . $this->_frequency . '_Statement_' . $this->_type . '-' . $datetime . ".pdf";
+      $name = "Payment_" . $this->_frequency . '_Statement_' . $this->_type . '_' . rand() . ".pdf";
 
       $fileName = $config->uploadDir . $name;
 
@@ -417,7 +424,7 @@ class CRM_Paymentstatement_Utils {
     $domainID = CRM_Core_Config::domainID();
     $settings = Civi::settings($domainID);
     $mainSettings = [];
-    $elementNames = ['paymentstatement_logo', 'paymentstatement_custom_css', 'paymentstatement_default_email'];
+    $elementNames = ['paymentstatement_logo', 'paymentstatement_custom_css', 'paymentstatement_default_email', 'paymentstatement_contact_id'];
     foreach ($elementNames as $elementName) {
       $mainSettings[$elementName] = $settings->get($elementName);
     }
