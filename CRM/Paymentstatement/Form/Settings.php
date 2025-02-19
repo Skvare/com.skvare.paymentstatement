@@ -15,8 +15,12 @@ class CRM_Paymentstatement_Form_Settings extends CRM_Core_Form {
   public function buildQuickForm(): void {
 
     // add form elements
-    $this->add('text', 'paymentstatement_logo', 'Logo on the PDF', [], FALSE);
-    $this->add('text', 'paymentstatement_logo', 'Logo on the PDF', [], FALSE);
+    $attribute = ['rows' => 100, 'cols' => 100, 'class' => 'collapsed'];
+    $this->add('text', 'paymentstatement_logo', 'Logo URL/Path', ['size' => 100,
+      'maxlength' => 100,], FALSE);
+    $this->add('text', 'paymentstatement_default_email', 'Default Email (if contact does not have email)',
+      ['size' => 100, 'maxlength' => 100,], FALSE);
+    $this->add('textarea', 'paymentstatement_custom_css', 'CSS Block', [], FALSE);
     $this->addButtons([
       [
         'type' => 'submit',
@@ -27,30 +31,30 @@ class CRM_Paymentstatement_Form_Settings extends CRM_Core_Form {
 
     // export form elements
     $this->assign('elementNames', $this->getRenderableElementNames());
+    // use settings as defined in default domain
+    $domainID = CRM_Core_Config::domainID();
+    $settings = Civi::settings($domainID);
+    $setDefaults = [];
+    foreach ($this->getRenderableElementNames() as $elementName) {
+      $setDefaults[$elementName] = $settings->get($elementName);
+    }
+    $this->setDefaults($setDefaults);
     parent::buildQuickForm();
   }
 
   public function postProcess(): void {
     $values = $this->exportValues();
-    $options = $this->getColorOptions();
-    CRM_Core_Session::setStatus(E::ts('You picked color "%1"', [
-      1 => $options[$values['favorite_color']],
-    ]));
-    parent::postProcess();
-  }
 
-  public function getColorOptions(): array {
-    $options = [
-      '' => E::ts('- select -'),
-      '#f00' => E::ts('Red'),
-      '#0f0' => E::ts('Green'),
-      '#00f' => E::ts('Blue'),
-      '#f0f' => E::ts('Purple'),
-    ];
-    foreach (['1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e'] as $f) {
-      $options["#{$f}{$f}{$f}"] = E::ts('Grey (%1)', [1 => $f]);
+    // use settings as defined in default domain
+    $domainID = CRM_Core_Config::domainID();
+    $settings = Civi::settings($domainID);
+
+    foreach ($values as $k => $v) {
+      if (strpos($k, 'paymentstatement_') === 0) {
+        $settings->set($k, $v);
+      }
     }
-    return $options;
+    CRM_Core_Session::setStatus(E::ts('Setting updated successfully'));
   }
 
   /**

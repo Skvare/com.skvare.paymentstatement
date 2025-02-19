@@ -37,6 +37,7 @@ class CRM_Paymentstatement_Utils {
       $this->_paymentStartDate = date('F j, Y', strtotime($from));
       $this->_paymentEndDate = date('F j, Y', strtotime($to));
     }
+
     $this->_intitParams = [
       'frequency' => $this->_frequency,
       'type' => $this->_type,
@@ -44,6 +45,10 @@ class CRM_Paymentstatement_Utils {
       'paymentStartDate' => $this->_paymentStartDate,
       'paymentEndDate' => $this->_paymentEndDate,
     ];
+    $settings = self::getSettings();
+    if (!empty($settings['paymentstatement_default_email'])) {
+      $this->_intitParams['paymentstatement_default_email'] = $settings['paymentstatement_default_email'];
+    }
     // Get all contributions for the current year
     $currentYear = date('Y');
     $contributions = \Civi\Api4\Contribution::get(TRUE)
@@ -96,29 +101,26 @@ class CRM_Paymentstatement_Utils {
         $allContactIds[$houseHoldContactID] = $houseHoldContactID;
       }
     }
-    //CRM_Core_Error::debug_var('$allContactIds', $allContactIds);
     // Get emails details those contact whose email is available.
     $contactEmails = $this->getContactEmails($allContactIds);
-    //CRM_Core_Error::debug_var('$contactEmails', $contactEmails);
     // Get contact ids for which email only.
     $contactIDswithEmail = array_keys($contactEmails);
-    //CRM_Core_Error::debug_var('$contactIDswithEmail', $contactIDswithEmail);
     // Get Contact whose email is not availble.
     $contactIDsForDownloadFile = array_diff($allContactIds, $contactIDswithEmail);
-    // CRM_Core_Error::debug_var('$contactIDsForDownloadFile',$contactIDsForDownloadFile);
     $this->_pdfFormat = CRM_Core_BAO_MessageTemplate::getPDFFormatForTemplate('contribution_invoice_receipt');
+
     // First send email to contact who has email.
     foreach ($contactIDswithEmail as $contactId) {
       $contribution = $contributionsByContacts[$contactId];
-      $html = $this->generatePdfStatementForContact('email', $contactId, $contribution, $contributionsSumByContacts[$contactId]['total_amount']);
-      $this->generateEmailforPayment('email', $contactId, $html);
+      [$html, $paymentStatementPdfFile] = $this->generatePdfStatementForContact($contactId, $contribution, $contributionsSumByContacts[$contactId]['total_amount']);
+      $this->generateEmailforPayment('email', $contactId, $html, $paymentStatementPdfFile);
     }
     // Generate PDF for contact who has no email.
     $htmlArray = [];
-
     foreach ($contactIDsForDownloadFile as $contactId) {
       $contribution = $contributionsByContacts[$contactId];
-      $htmlArray[$contactId] = $this->generatePdfStatementForContact('file', $contactId, $contribution, $contributionsSumByContacts[$contactId]['total_amount']);
+      [$html, $paymentStatementPdfFile] = $this->generatePdfStatementForContact($contactId, $contribution, $contributionsSumByContacts[$contactId]['total_amount']);
+      $htmlArray[$contactId] = $html;
     }
     if (!empty($htmlArray)) {
       $this->generateEmailforPayment('file', NULL, $htmlArray);
@@ -200,7 +202,7 @@ class CRM_Paymentstatement_Utils {
    * @return void
    * @throws CRM_Core_Exception
    */
-  private function generateEmailforPayment($type = 'file', $contactId = NULL, $html) {
+  private function generateEmailforPayment($type = 'file', $contactId = NULL, $html = '', $paymentStatementPdfFile = '') {
     $pdfFileName = $this->_frequency . '_Statement_' . $this->_type . '.pdf';
     $email = NULL;
     if ($contactId) {
@@ -213,20 +215,50 @@ class CRM_Paymentstatement_Utils {
       'PDFFilename' => $pdfFileName,
       'tokenContext' => ['contactId' => $contactId],
       'modelProps' => [
-        //'userEnteredText' => $this->getSubmittedValue('receipt_text'),
         'contactID' => $contactId,
       ],
     ];
     $fromEmailAddress = 'system@skvare.com';
     $sendTemplateParams['from'] = $fromEmailAddress;
-    $sendTemplateParams['toEmail'] = $email ?? 'noemail@skvare.com';
+    $sendTemplateParams['toEmail'] = $email ?? $this->_intitParams['paymentstatement_default_email'];
     if (empty($sendTemplateParams['attachments'])) {
       $sendTemplateParams['attachments'] = [];
     }
-
-    $paymentStatementPdfFile = CRM_Utils_Mail::appendPDF($pdfFileName, $html, $this->_pdfFormat);
+    if ($contactId && !empty($paymentStatementPdfFile)) {
+      // $paymentStatementPdfFile = $paymentStatementPdfFile;
+      // attachment file is already availbale.
+    }
+    else {
+      $paymentStatementPdfFile = CRM_Utils_Mail::appendPDF($pdfFileName, $html, $this->_pdfFormat);
+    }
     $sendTemplateParams['attachments'][] = $paymentStatementPdfFile;
     [$sent, $subject, $message, $html] = CRM_Core_BAO_MessageTemplate::sendTemplate($sendTemplateParams);
+    if ($sent && $contactId) {
+      // Create Activity for Payment Printing..., Attached PDF to Activity.
+      $subject = $this->_frequency . ' Statement ' . $this->_period;
+      $activityDetail = '';
+      if (!empty($html)) {
+        preg_match("/<body[^>]*>(.*?)<\/body>/is", $html, $matches);
+        if (!empty($matches[1])) {
+          $activityDetail = $matches[1];
+        }
+      }
+      $activityParams = [
+        'subject' => 'Payment Statement Email',
+        'source_contact_id' => $contactId,
+        'target_contact_id' => $contactId,
+        'activity_type_id' => CRM_Core_PseudoConstant::getKey('CRM_Activity_BAO_Activity', 'activity_type_id', 'Email'),
+        'activity_date_time' => date('YmdHis'),
+        'details' => $activityDetail,
+      ];
+
+      try {
+        $result = civicrm_api3('activity', 'create', $activityParams);
+      }
+      catch (Exception $e) {
+        CRM_Core_Error::debug_var('FAILED : print activity Result', $e->getMessage(), FALSE, TRUE, 'com.skvare.paymentstatement');
+      }
+    }
   }
 
   /**
@@ -245,14 +277,19 @@ class CRM_Paymentstatement_Utils {
    *
    * @throws CRM_Core_Exception
    */
-  private function generatePdfStatementForContact($type = 'file', $contactId, $contributions, $totalAmount) {
+  private function generatePdfStatementForContact($contactId, $contributions, $totalAmount) {
     // Fetch contact details
     $contact = civicrm_api3('Contact', 'getsingle', ['id' => $contactId]);
-    $address  = CRM_Core_BAO_Address::getValues(['contact_id' => $contactId], TRUE);
+    $address = CRM_Core_BAO_Address::getValues(['contact_id' => $contactId], TRUE);
     $address = reset($address);
     $addressDisplay = $address['display_text'];
     if (!empty($addressDisplay)) {
       $addressDisplay = nl2br($addressDisplay);
+    }
+    $settings = self::getSettings();
+    if (!empty($settings['paymentstatement_custom_css'])) {
+      $customCss = $settings['paymentstatement_custom_css'];
+      CRM_Core_Region::instance('export-document-header')->add(['style' => "{$customCss}"]);
     }
 
     $sendTemplateParams = [
@@ -265,38 +302,71 @@ class CRM_Paymentstatement_Utils {
       ], $this->_intitParams),
       'tokenContext' => ['contactId' => $contactId],
       'modelProps' => [
-        //'userEnteredText' => $this->getSubmittedValue('receipt_text'),
         'contactID' => $contactId,
       ],
     ];
-    [$sent, $subject, $message, $html] = CRM_Core_BAO_MessageTemplate::sendTemplate($sendTemplateParams);
-    if ($type == 'file') {
-      return $html;
+    if (!empty($settings['paymentstatement_logo'])) {
+      $headerImagePath = '';
+      if (strpos($settings['paymentstatement_logo'], 'http') === 0) {
+        $headerImagePath = $settings['paymentstatement_logo'];
+      }
+      elseif (file_exists($settings['paymentstatement_logo'])) {
+        $headerImagePath = self::imageEncodeBase64($headerImagePath);
+      }
+      $sendTemplateParams['tplParams']['headerImage'] = $headerImagePath;
     }
-    return $html;
 
+    [$sent, $subject, $message, $html] = CRM_Core_BAO_MessageTemplate::sendTemplate($sendTemplateParams);
     // Create Activity for Payment Printing..., Attached PDF to Activity.
+    $subject = $this->_frequency . ' Statement ' . $this->_period;
+    $activityDetail = $html;
+    if (!empty($html)) {
+      preg_match("/<body[^>]*>(.*?)<\/body>/is", $html, $matches);
+      if (!empty($matches[1])) {
+        $activityDetail = $matches[1];
+
+      }
+    }
     $activityParams = [
-      'source_contact_id' => $contactID,
-      'target_contact_id' => $contactID,
-      'activity_type_id' => "payment_statement",
-      'source_record_id' => $campaignID,
-      'status_id' => "Completed",
-      'subject' => 'Payment Statement for ' . $displayName,
-      'details' => CRM_Utils_Array::value('html', $html),
+      'subject' => $subject,
+      'source_contact_id' => $contactId,
+      'target_contact_id' => $contactId,
+      'activity_type_id' => CRM_Core_PseudoConstant::getKey('CRM_Activity_BAO_Activity', 'activity_type_id', 'Print PDF Letter'),
       'activity_date_time' => date('YmdHis'),
+      'details' => $activityDetail,
     ];
 
-    $userContactId = CRM_Core_Session::getLoggedInContactID();
-    if ($userContactId) {
-      $activityParams['source_contact_id'] = $userContactId;
+    $pdfFileName = $this->_frequency . '_Statement_' . $this->_type . '.pdf';
+    $paymentStatementPdfFile = CRM_Utils_Mail::appendPDF($pdfFileName, $html, $this->_pdfFormat);
+
+    // Attach pdf file to activity
+    if (!empty($paymentStatementPdfFile)) {
+      $config = CRM_Core_Config::singleton();
+      // make file name unique, in case of re-printing, file should not be overwrite.
+      $datetime = date('Ymd-Gi');
+      $name = "Payment-" . $this->_frequency . '_Statement_' . $this->_type . '-' . $datetime . ".pdf";
+
+      $fileName = $config->uploadDir . $name;
+
+      // copy file from temporary location to upload directory.
+      copy($paymentStatementPdfFile['fullPath'], $fileName);
+
+      $activityParams['attachFile_1'] = [
+        'uri' => $fileName,
+        'type' => 'application/pdf',
+        'location' => $fileName,
+        'upload_date' => date('YmdHis'),
+        'description' => 'Payment Statement PDF File'
+      ];
     }
     try {
-      //$result = civicrm_api3('activity', 'create', $activityParams);
+      $result = civicrm_api3('activity', 'create', $activityParams);
     }
     catch (Exception $e) {
       CRM_Core_Error::debug_var('FAILED : print activity Result', $e->getMessage(), FALSE, TRUE, 'com.skvare.paymentstatement');
     }
+
+    return [$html, $paymentStatementPdfFile];
   }
 
   /**
@@ -308,7 +378,7 @@ class CRM_Paymentstatement_Utils {
    *   Check for polite email.
    *
    * @return array
-   * 
+   *
    * @throws \Civi\Core\Exception\DBQueryException
    */
   private function getContactEmails($allContactIds, $polite = TRUE) {
@@ -336,6 +406,43 @@ class CRM_Paymentstatement_Utils {
       ];
     }
     return $contactIdsWithEmail;
+  }
+
+  /**
+   * Function to return global setting for.
+   *
+   * @return array
+   */
+  public static function getSettings() {
+    $domainID = CRM_Core_Config::domainID();
+    $settings = Civi::settings($domainID);
+    $mainSettings = [];
+    $elementNames = ['paymentstatement_logo', 'paymentstatement_custom_css', 'paymentstatement_default_email'];
+    foreach ($elementNames as $elementName) {
+      $mainSettings[$elementName] = $settings->get($elementName);
+    }
+
+    return $mainSettings;
+  }
+
+  /**
+   * Image Base 64.
+   *
+   * @param string $filePath
+   *   File path.
+   *
+   * @return string
+   *   Image Data.
+   */
+  public static function imageEncodeBase64(string $filePath): string {
+    if (file_exists($filePath)) {
+      $imageMeta = getimagesize($filePath);
+      $data = file_get_contents($filePath);
+      $base64 = base64_encode($data);
+      $base64 = preg_replace('/\s+/', '', $base64);
+      return "data:{$imageMeta['mime']};base64," . rawurlencode($base64);
+    }
+    return '';
   }
 
 }

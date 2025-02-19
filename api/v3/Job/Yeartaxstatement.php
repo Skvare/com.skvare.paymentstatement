@@ -10,7 +10,15 @@ use CRM_Paymentstatement_ExtensionUtil as E;
  * @see https://docs.civicrm.org/dev/en/latest/framework/api-architecture/
  */
 function _civicrm_api3_job_Yeartaxstatement_spec(&$spec) {
-  //$spec['magicword']['api.required'] = 1;
+  $spec['period']['api_required'] = 1;
+  $spec['period']['title'] = 'Relative time period';
+  $spec['period']['description'] = 'Relative time period';
+  $spec['period']['api.default'] = 'this.year';
+
+  $spec['type']['api_required'] = 1;
+  $spec['type']['title'] = 'Period type';
+  $spec['type']['description'] = 'Period type, e.g year, month';
+  $spec['type']['api.default'] = 'year';
 }
 
 /**
@@ -26,7 +34,21 @@ function _civicrm_api3_job_Yeartaxstatement_spec(&$spec) {
  * @throws CRM_Core_Exception
  */
 function civicrm_api3_job_Yeartaxstatement($params) {
-  CRM_Core_Error::debug_var('civicrm_api3_job_Yeartaxstatement $params', $params);
+  // validate the period value.
+  $relativeDate = explode('.', $params['period'], 2);
+  if (count($relativeDate) == 2) {
+    // convert relative date to actual date.
+    [$from, $to] = CRM_Utils_Date::getFromTo($params['period'], '', '');
+    if (empty($from)) {
+      throw new API_Exception('Invalid relative date format', 'period');
+    }
+  }
+  else {
+    throw new API_Exception('Invalid date format', 'period');
+  }
+  // Send request to generate payment statement.
   $object = new CRM_Paymentstatement_Utils();
-  $object->generatePaymentStatement('year', 'this.year');
+  $object->generatePaymentStatement($params['type'], $params['period']);
+  $returnValues = "Payment statement generated for period: {$params['period']}";
+  return civicrm_api3_create_success($returnValues, $params, 'Job', 'Yeartaxstatement');
 }

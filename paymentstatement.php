@@ -30,3 +30,20 @@ function paymentstatement_civicrm_install(): void {
 function paymentstatement_civicrm_enable(): void {
   _paymentstatement_civix_civicrm_enable();
 }
+
+/**
+ * Implements hook_civicrm_navigationMenu().
+ *
+ * @link https://docs.civicrm.org/dev/en/latest/hooks/hook_civicrm_navigationMenu
+ */
+function paymentstatement_civicrm_navigationMenu(&$menu) {
+  _paymentstatement_civix_insert_navigation_menu($menu, 'Administer/System Settings', [
+    'label' => E::ts('Payment Statement Setting'),
+    'name' => 'payment_statement_setting',
+    'url' => CRM_Utils_System::url('civicrm/admin/paymentstatement', 'reset=1', TRUE),
+    'permission' => 'administer CiviCRM',
+    'operator' => 'OR',
+    'separator' => 0,
+  ]);
+  _paymentstatement_civix_navigationMenu($menu);
+}

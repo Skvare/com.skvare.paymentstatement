@@ -14,7 +14,7 @@ class CRM_Paymentstatement_Upgrader extends \CRM_Extension_Upgrader_Base {
    * Note that if a file is present sql\auto_install that will run regardless of this hook.
    */
   public function install(): void {
-    // $this->executeSqlFile('sql/my_install.sql');
+    $this->installStatmentMsgWorkflowTpls();
   }
 
   public function installStatmentMsgWorkflowTpls(): void {
@@ -44,26 +44,11 @@ class CRM_Paymentstatement_Upgrader extends \CRM_Extension_Upgrader_Base {
         'name' => 'payment_statement',
         'subject' => ts("Payment Statment", ['domain' => 'com.skvare.paymentstatement']),
       ],
-    ];
-
-    $this->createMsgTpl($msgTpls, $optionGroupId);
-  }
-
-  public function installStatmentMsgWorkflowTpls2(): void {
-
-    // If an exception is thrown, most likely the option group already exists,
-    // in which case we'll just use that one.
-    $optionGroupId = civicrm_api3('OptionGroup', 'getvalue', [
-      'name' => 'msg_tpl_workflow_payment_statement',
-      'return' => 'id',
-    ]);
-
-    $msgTpls = [
-      '2' => [
+      [
         'description' => ts('Payment Statment Email', ['domain' => 'com.skvare.paymentstatement']),
         'label' => ts('Payment Statment Email body', ['domain' => 'com.skvare.paymentstatement']),
         'name' => 'payment_statement_email',
-        'subject' => "Payment Statement for {$periodText}",
+        'subject' => '{$frequency} Payment Statement for {$period}',
       ],
     ];
 
@@ -121,22 +106,12 @@ class CRM_Paymentstatement_Upgrader extends \CRM_Extension_Upgrader_Base {
    *
    * @return TRUE on success
    * @throws CRM_Core_Exception
-   */
-  public function upgrade_1100(): bool {
-    $this->ctx->log->info('Applying update 1100');
-    $this->installStatmentMsgWorkflowTpls();
-    return TRUE;
-  }
-
-  /**
-   * Example: Run a couple simple queries.
    *
-   * @return TRUE on success
-   * @throws CRM_Core_Exception
-   */
-  public function upgrade_1101(): bool {
-    $this->ctx->log->info('Applying update 1101');
-    $this->installStatmentMsgWorkflowTpls2();
-    return TRUE;
+  public function upgrade_1100(): bool {
+    //$this->ctx->log->info('Applying update 1100');
+    //$this->installStatmentMsgWorkflowTpls();
+    //return TRUE;
   }
+  */
+
 }

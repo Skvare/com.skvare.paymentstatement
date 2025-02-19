@@ -4,6 +4,6 @@
     <path>civicrm/admin/paymentstatement</path>
     <page_callback>CRM_Paymentstatement_Form_Settings</page_callback>
     <title>Settings</title>
-    <access_arguments>access CiviCRM</access_arguments>
+    <access_arguments>administer CiviCRM</access_arguments>
   </item>
 </menu>
