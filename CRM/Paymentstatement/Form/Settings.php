@@ -17,11 +17,11 @@ class CRM_Paymentstatement_Form_Settings extends CRM_Core_Form {
     $attribute = ['rows' => 100, 'cols' => 100, 'class' => 'collapsed'];
     $this->add('text', 'paymentstatement_logo', 'Logo URL/Path', ['size' => 100,
       'maxlength' => 100,], FALSE);
-    $this->addEntityRef('paymentstatement_contact_id', ts('Log Activity Againt this contact for shared Email PDF'), ['create' => TRUE, 'api' => ['extra' => ['email']]], TRUE);
-    $this->add('text', 'paymentstatement_default_email', 'Default Email (if contact does not have email)',
+    $this->addEntityRef('paymentstatement_contact_id', ts('Log Activity Against this contact for shared Email PDF'), ['create' => TRUE, 'api' => ['extra' => ['email']]], TRUE);
+    $this->add('text', 'paymentstatement_default_email', 'Shared PDF sent to this email',
       ['size' => 100, 'maxlength' => 100,], FALSE);
 
-    $this->add('select', 'paymentstatement_relationships', 'Relationship type Between Indvidual and household',
+    $this->add('select', 'paymentstatement_relationships', 'Relationship type between individual and household',
       CRM_Paymentstatement_Utils::relationshipTypes(),
       FALSE, ['class' => 'crm-select2', 'multiple' => 'multiple', 'placeholder'
       => ts('- any -')]);
