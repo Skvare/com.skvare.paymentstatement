@@ -11,6 +11,8 @@ class CRM_Paymentstatement_Utils {
   var $_paymentEndDate = '';
   var $_frequency = '';
   var $_intitParams = [];
+  var $_from = '';
+  var $_to = '';
 
   /**
    * @param string $type
@@ -23,6 +25,8 @@ class CRM_Paymentstatement_Utils {
    */
   public function generatePaymentStatement($type = 'year', $period = 'this.year') {
     [$from, $to] = CRM_Utils_Date::getFromTo($period, '', '');
+    $this->_from = $from;
+    $this->_to = $to;
     if ($type == 'year') {
       $this->_frequency = 'Yearly';
       $this->_type = 'year';
@@ -106,7 +110,7 @@ class CRM_Paymentstatement_Utils {
     $contributionSofts = \Civi\Api4\ContributionSoft::get(TRUE)
       ->addSelect('amount', 'contribution.receive_date', 'contribution.total_amount', 'contact_id')
       ->addJoin('Contribution AS contribution', 'INNER')
-      ->addJoin('Contact AS contact', 'INNER', ['contribution.contact_id', '=', 'contact.id'])
+      ->addJoin('Contact AS contact', 'INNER', ['contact_id', '=', 'contact.id'])
       ->addWhere('contact.contact_type', '=', 'Individual')
       ->addWhere('contribution.is_test', '=', FALSE)
       ->addWhere('contribution.total_amount', '>', 0)
@@ -235,6 +239,8 @@ class CRM_Paymentstatement_Utils {
    * @throws \Civi\API\Exception\UnauthorizedException
    */
   private function getContactContributionRecord($contactID) {
+    $from = $this->_from;
+    $to = $this->_to;
     $contributions = \Civi\Api4\Contribution::get(TRUE)
       ->addSelect('id', 'contact_id', 'total_amount', 'receive_date')
       ->addWhere('contribution_status_id', 'IN', [1, 8]) // Completed,// Partial.
