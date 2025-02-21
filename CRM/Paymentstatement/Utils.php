@@ -16,17 +16,47 @@ class CRM_Paymentstatement_Utils {
    * @param string $type
    *   Payment Statement Type (year, month).
    * @param string $period
-   * @return void
+   * @return string
+   *   Return string.
    * @throws CRM_Core_Exception
    * @throws \Civi\API\Exception\UnauthorizedException
    */
   public function generatePaymentStatement($type = 'year', $period = 'this.year') {
     [$from, $to] = CRM_Utils_Date::getFromTo($period, '', '');
-    $this->_type = $type;
     if ($type == 'year') {
       $this->_frequency = 'Yearly';
       $this->_type = 'year';
       $this->_period = date('Y', strtotime($from));
+      $this->_paymentStartDate = date('F j, Y', strtotime($from));
+      $this->_paymentEndDate = date('F j, Y', strtotime($to));
+    }
+    elseif ($type == 'quarter') {
+      $this->_frequency = 'Quarterly';
+      $this->_type = 'quarter';
+      $quarter = [
+        1 => 'January - March',
+        2 => 'April - June',
+        3 => 'July - September',
+        4 => 'October - December',
+      ];
+      $curMonth = date("m", strtotime($from));
+      $curQuarter = ceil($curMonth / 3);
+      $this->_period = $quarter[$curQuarter];
+      $this->_paymentStartDate = date('F j, Y', strtotime($from));
+      $this->_paymentEndDate = date('F j, Y', strtotime($to));
+    }
+    elseif ($this == 'week') {
+      $this->_frequency = 'Weekly';
+      $this->_type = 'week';
+      $weekNumberOfMonth = ceil(date("j", strtotime($from)) / 7);
+      $this->_period = date('F', strtotime($from)) . ' Week ' . $weekNumberOfMonth;
+      $this->_paymentStartDate = date('F j, Y', strtotime($from));
+      $this->_paymentEndDate = date('F j, Y', strtotime($to));
+    }
+    elseif ($this == 'fiscal_year') {
+      $this->_frequency = 'Fiscal Year';
+      $this->_type = 'fiscal year';
+      $this->_period = date('F', strtotime($from));
       $this->_paymentStartDate = date('F j, Y', strtotime($from));
       $this->_paymentEndDate = date('F j, Y', strtotime($to));
     }
@@ -49,9 +79,10 @@ class CRM_Paymentstatement_Utils {
     if (!empty($settings['paymentstatement_default_email'])) {
       $this->_intitParams['paymentstatement_default_email'] = $settings['paymentstatement_default_email'];
     }
+    $totalRecordAttempted = $processed = $skipped = 0;
     $domainValues = CRM_Core_BAO_Domain::getNameAndEmail();
     $this->_intitParams['from'] = "$domainValues[0] <$domainValues[1]>";
-
+    $relationshipTypes = $settings['paymentstatement_relationships'] ?? [];
     // Get all contributions for the current year
     $currentYear = date('Y');
     $contributions = \Civi\Api4\Contribution::get(TRUE)
@@ -89,20 +120,25 @@ class CRM_Paymentstatement_Utils {
       $contributionsByContacts[$contributionSoft['contact_id']][] = $contributionSoft;
       $contributionsSumByContacts[$contributionSoft['contact_id']]['total_amount'] += $contributionSoft['total_amount'];
     }
-    // Now check any contact have household contact, if present then get
-    // household contact contribution and soft credit of household.
     // Get All contacts ids
     $allContactIds = array_keys($contributionsByContacts);
     $allContactIds = array_combine($allContactIds, $allContactIds);
-    foreach ($allContactIds as $contactId) {
-      [$houseHoldContactID, $houseHoldContributionsByContact, $houseHoldContributionsSumByContact] = $this->getRelatedHouseHold($contactId);
-      if ($houseHoldContactID && !empty($houseHoldContributionsByContact)) {
-        unset($contributionsByContacts[$contactId]);
-        unset($contributionsSumByContacts[$contactId]);
-        $contributionsByContacts[$houseHoldContactID] = $houseHoldContributionsByContact[$houseHoldContactID];
-        $contributionsSumByContacts[$houseHoldContactID] = $houseHoldContributionsByContact[$houseHoldContactID];
-        unset($allContactIds[$contactId]);
-        $allContactIds[$houseHoldContactID] = $houseHoldContactID;
+    // Now check any contact have household contact, if present then get
+    // household contact contribution and soft credit of household.
+    if (!empty($relationshipTypes)) {
+      foreach ($allContactIds as $contactId) {
+        [$houseHoldContactID, $houseHoldContributionsByContact,
+          $houseHoldContributionsSumByContact] = $this->getRelatedHouseHold($contactId, $relationshipTypes);
+        if ($houseHoldContactID && !empty($houseHoldContributionsByContact)) {
+          // If household contact have contribution then remove individual contact.
+          unset($contributionsByContacts[$contactId]);
+          unset($contributionsSumByContacts[$contactId]);
+          unset($allContactIds[$contactId]);
+          // Add household contact contribution contact.
+          $contributionsByContacts[$houseHoldContactID] = $houseHoldContributionsByContact[$houseHoldContactID];
+          $contributionsSumByContacts[$houseHoldContactID] = $houseHoldContributionsByContact[$houseHoldContactID];
+          $allContactIds[$houseHoldContactID] = $houseHoldContactID;
+        }
       }
     }
     // Get emails details those contact whose email is available.
@@ -115,6 +151,13 @@ class CRM_Paymentstatement_Utils {
 
     // First send email to contact who has email.
     foreach ($contactIDswithEmail as $contactId) {
+      $totalRecordAttempted++;
+      // If activity exist, no need to re-create again.
+      if ($this->checkPdfActivityExist($contactId)) {
+        $skipped++;
+        continue;
+      }
+      $processed++;
       $contribution = $contributionsByContacts[$contactId];
       [$html, $paymentStatementPdfFile] = $this->generatePdfStatementForContact($contactId, $contribution, $contributionsSumByContacts[$contactId]['total_amount']);
       $this->generateEmailforPayment('email', $contactId, $html, $paymentStatementPdfFile);
@@ -122,14 +165,43 @@ class CRM_Paymentstatement_Utils {
     // Generate PDF for contact who has no email.
     $htmlArray = [];
     foreach ($contactIDsForDownloadFile as $contactId) {
+      $totalRecordAttempted++;
       $contribution = $contributionsByContacts[$contactId];
+      // If activity exist, no need to re-create again.
+      if ($this->checkPdfActivityExist($contactId)) {
+        $skipped++;
+        continue;
+      }
+      $processed++;
       [$html, $paymentStatementPdfFile] = $this->generatePdfStatementForContact($contactId, $contribution, $contributionsSumByContacts[$contactId]['total_amount']);
       $htmlArray[$contactId] = $html;
     }
     $sharedContactID = $settings['paymentstatement_contact_id'] ?? NULL;
     if (!empty($htmlArray)) {
-      $this->generateEmailforPayment('file', $sharedContactID, $htmlArray);
+      // If activity exist, no need to re-create again.
+      if (!$this->checkPdfActivityExist($sharedContactID, 'shared')) {
+        // Created actiivty to shared pdf.
+        $paymentStatementPdfFileShared = $this->createPDfActivity($sharedContactID, $htmlArray, 'shared');
+        $this->generateEmailforPayment('shared', $sharedContactID, $htmlArray, $paymentStatementPdfFileShared);
+      }
     }
+    return "Number of record processed $totalRecordAttempted, Created $processed, Skipped $skipped";
+  }
+
+  private function checkPdfActivityExist($contactId, $type = 'email') {
+    $subject = $this->_frequency . ' Statement ' . $this->_period;
+    if ($type == 'shared') {
+      $subject = 'Common: ' . $subject;
+    }
+    $result = civicrm_api3('Activity', 'getcount', [
+      'activity_type_id' => "Print PDF Letter",
+      'subject' => $subject,
+      'source_contact_id' => $contactId,
+    ]);
+    if ($result) {
+      return TRUE;
+    }
+    return FALSE;
   }
 
   /**
@@ -139,10 +211,10 @@ class CRM_Paymentstatement_Utils {
    * @throws CRM_Core_Exception
    * @throws \Civi\API\Exception\UnauthorizedException
    */
-  private function getRelatedHouseHold($contactID) {
+  private function getRelatedHouseHold($contactID, $relationshipTypes = []) {
     $relationshipCaches = \Civi\Api4\RelationshipCache::get(TRUE)
       ->addSelect('far_contact_id')
-      ->addWhere('near_relation', 'IN', ['Head of Household for', 'Household Member of'])
+      ->addWhere('relationship_type_id', 'IN', $relationshipTypes)
       ->addWhere('is_active', '=', TRUE)
       ->addWhere('near_contact_id', '=', $contactID)
       ->setLimit(0)
@@ -208,7 +280,7 @@ class CRM_Paymentstatement_Utils {
    * @return void
    * @throws CRM_Core_Exception
    */
-  private function generateEmailforPayment($type = 'file', $contactId = NULL, $html = '', $paymentStatementPdfFile = '') {
+  private function generateEmailforPayment($type = 'shared', $contactId = NULL, $html = '', $paymentStatementPdfFile = '') {
     $pdfFileName = $this->_frequency . '_Statement_' . $this->_type . '_' . rand() . '.pdf';
     $email = NULL;
     if ($contactId) {
@@ -241,7 +313,7 @@ class CRM_Paymentstatement_Utils {
     if ($sent && $contactId) {
       // Create Activity for Payment Printing..., Attached PDF to Activity.
       $subject = $this->_frequency . ' Payment Statement ' . $this->_period;
-      if ($type == 'file') {
+      if ($type == 'shared') {
         $subject .= ' (Common PDF)';
       }
       $activityDetail = '';
@@ -325,55 +397,71 @@ class CRM_Paymentstatement_Utils {
     }
 
     [$sent, $subject, $message, $html] = CRM_Core_BAO_MessageTemplate::sendTemplate($sendTemplateParams);
-    // Create Activity for Payment Printing..., Attached PDF to Activity.
-    $subject = $this->_frequency . ' Statement ' . $this->_period;
-    $activityDetail = $html;
-    if (!empty($html)) {
-      preg_match("/<body[^>]*>(.*?)<\/body>/is", $html, $matches);
-      if (!empty($matches[1])) {
-        $activityDetail = $matches[1];
-
-      }
-    }
-    $activityParams = [
-      'subject' => $subject,
-      'source_contact_id' => $contactId,
-      'target_contact_id' => $contactId,
-      'activity_type_id' => CRM_Core_PseudoConstant::getKey('CRM_Activity_BAO_Activity', 'activity_type_id', 'Print PDF Letter'),
-      'activity_date_time' => date('YmdHis'),
-      'details' => $activityDetail,
-    ];
-
-    $pdfFileName = $this->_frequency . '_Statement_' . $this->_type. '_' . rand() . '.pdf';
-    $paymentStatementPdfFile = CRM_Utils_Mail::appendPDF($pdfFileName, $html, $this->_pdfFormat);
-
-    // Attach pdf file to activity
-    if (!empty($paymentStatementPdfFile)) {
-      $config = CRM_Core_Config::singleton();
-      // make file name unique, in case of re-printing, file should not be overwrite.
-      $name = "Payment_" . $this->_frequency . '_Statement_' . $this->_type . '_' . rand() . ".pdf";
-
-      $fileName = $config->uploadDir . $name;
-
-      // copy file from temporary location to upload directory.
-      copy($paymentStatementPdfFile['fullPath'], $fileName);
-
-      $activityParams['attachFile_1'] = [
-        'uri' => $fileName,
-        'type' => 'application/pdf',
-        'location' => $fileName,
-        'upload_date' => date('YmdHis'),
-        'description' => 'Payment Statement PDF File'
-      ];
-    }
-    try {
-      $result = civicrm_api3('activity', 'create', $activityParams);
-    }
-    catch (Exception $e) {
-      CRM_Core_Error::debug_var('FAILED : print activity Result', $e->getMessage(), FALSE, TRUE, 'com.skvare.paymentstatement');
-    }
+    $paymentStatementPdfFile = $this->createPDfActivity($contactId, $html);
 
     return [$html, $paymentStatementPdfFile];
+  }
+
+  private function createPDfActivity($contactId, $html, $type = 'email') {
+    $subject = $this->_frequency . ' Statement ' . $this->_period;
+    if ($type == 'shared') {
+      $subject = 'Common: ' . $subject;
+    }
+
+    $activityDetail = $html;
+    $paymentStatementPdfFile = [];
+    if (!empty($html)) {
+      if ($type == 'shared') {
+        $activityDetail = 'Shared PDF';
+      }
+      else {
+        preg_match("/<body[^>]*>(.*?)<\/body>/is", $html, $matches);
+        if (!empty($matches[1])) {
+          $activityDetail = $matches[1];
+        }
+      }
+
+      $activityParams = [
+        'subject' => $subject,
+        'source_contact_id' => $contactId,
+        'target_contact_id' => $contactId,
+        'activity_type_id' => CRM_Core_PseudoConstant::getKey('CRM_Activity_BAO_Activity', 'activity_type_id', 'Print PDF Letter'),
+        'activity_date_time' => date('YmdHis'),
+        'details' => $activityDetail,
+      ];
+
+      $pdfFileName = $this->_frequency . '_Statement_' . $this->_type . '_' . rand() . '.pdf';
+      $paymentStatementPdfFile = CRM_Utils_Mail::appendPDF($pdfFileName, $html, $this->_pdfFormat);
+
+      // Attach pdf file to activity
+      if (!empty($paymentStatementPdfFile)) {
+        $config = CRM_Core_Config::singleton();
+        // make file name unique, in case of re-printing, file should not be overwrite.
+        $name = "Payment_" . $this->_frequency . '_Statement_' . $this->_type . '_' . rand() . ".pdf";
+
+        $fileName = $config->uploadDir . $name;
+
+        // copy file from temporary location to upload directory.
+        copy($paymentStatementPdfFile['fullPath'], $fileName);
+
+        $activityParams['attachFile_1'] = [
+          'uri' => $fileName,
+          'type' => 'application/pdf',
+          'location' => $fileName,
+          'upload_date' => date('YmdHis'),
+          'description' => 'Payment Statement PDF File',
+        ];
+      }
+      try {
+        $result = civicrm_api3('activity', 'create', $activityParams);
+      }
+      catch (Exception $e) {
+        CRM_Core_Error::debug_var('FAILED : print activity Result', $e->getMessage(), FALSE, TRUE, 'com.skvare.paymentstatement');
+      }
+
+      return $paymentStatementPdfFile;
+    }
+    return $paymentStatementPdfFile;
   }
 
   /**
@@ -424,7 +512,7 @@ class CRM_Paymentstatement_Utils {
     $domainID = CRM_Core_Config::domainID();
     $settings = Civi::settings($domainID);
     $mainSettings = [];
-    $elementNames = ['paymentstatement_logo', 'paymentstatement_custom_css', 'paymentstatement_default_email', 'paymentstatement_contact_id'];
+    $elementNames = ['paymentstatement_logo', 'paymentstatement_custom_css', 'paymentstatement_default_email', 'paymentstatement_contact_id', 'paymentstatement_relationships'];
     foreach ($elementNames as $elementName) {
       $mainSettings[$elementName] = $settings->get($elementName);
     }
@@ -451,5 +539,36 @@ class CRM_Paymentstatement_Utils {
     }
     return '';
   }
+
+  /**
+   * Get Relationship types.
+   *
+   * @return array
+   *   relationship type list.
+   *
+   * @throws CRM_Core_Exception
+   */
+  public static function relationshipTypes() {
+    $result = civicrm_api3('RelationshipType', 'get', [
+      'sequential' => 1,
+      'is_active' => 1,
+      'options' => ['limit' => 0],
+    ]);
+
+
+    $relationshipTypes = [];
+    foreach ($result['values'] as $type) {
+      if ($type['label_a_b'] == $type['label_b_a']) {
+        $relationshipTypes[$type['id']] = $type['label_a_b'];
+      }
+      else {
+        $relationshipTypes[$type['id']] = $type['label_a_b'] . ' ( ' . $type['contact_type_a'] . ' ) ' . ' / ' .
+          $type['label_b_a'] . ' ( ' . $type['contact_type_b'] . ' )';
+      }
+    }
+
+    return $relationshipTypes;
+  }
+
 
 }

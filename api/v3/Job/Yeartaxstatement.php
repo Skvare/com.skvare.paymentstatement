@@ -48,7 +48,8 @@ function civicrm_api3_job_Yeartaxstatement($params) {
   }
   // Send request to generate payment statement.
   $object = new CRM_Paymentstatement_Utils();
-  $object->generatePaymentStatement($params['type'], $params['period']);
+  $output = $object->generatePaymentStatement($params['type'], $params['period']);
   $returnValues = "Payment statement generated for period: {$params['period']}";
+  $returnValues .= $output;
   return civicrm_api3_create_success($returnValues, $params, 'Job', 'Yeartaxstatement');
 }
