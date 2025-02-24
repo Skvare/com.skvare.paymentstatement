@@ -67,7 +67,7 @@ class CRM_Paymentstatement_Utils {
     else {
       $this->_frequency = 'Monthly';
       $this->_type = 'month';
-      $this->_period = date('F', strtotime($from));
+      $this->_period = date('Y', strtotime($from)) . ' - ' . date('F', strtotime($from));
       $this->_paymentStartDate = date('F j, Y', strtotime($from));
       $this->_paymentEndDate = date('F j, Y', strtotime($to));
     }
@@ -103,6 +103,13 @@ class CRM_Paymentstatement_Utils {
       ->execute()->getArrayCopy();
     $contributionsByContacts = $contributionsSumByContacts = [];
     foreach ($contributions as $contribution) {
+      if (!array_key_exists($contribution['contact_id'], $contributionsByContacts)) {
+        $contributionsByContacts[$contribution['contact_id']] = [];
+      }
+      if (!array_key_exists($contribution['contact_id'], $contributionsSumByContacts)) {
+        $contributionsSumByContacts[$contribution['contact_id']] = [];
+        $contributionsSumByContacts[$contribution['contact_id']]['total_amount'] = 0;
+      }
       $contributionsByContacts[$contribution['contact_id']][$contribution['id']] = $contribution;
       $contributionsSumByContacts[$contribution['contact_id']]['total_amount'] += $contribution['total_amount'];
     }
@@ -121,6 +128,13 @@ class CRM_Paymentstatement_Utils {
     foreach ($contributionSofts as $contributionSoft) {
       $contributionSoft['total_amount'] = $contributionSoft['amount'];
       $contributionSoft['receive_date'] = $contributionSoft['contribution.receive_date'];
+      if (!array_key_exists($contributionSoft['contact_id'], $contributionsByContacts)) {
+        $contributionsByContacts[$contributionSoft['contact_id']] = [];
+      }
+      if (!array_key_exists($contributionSoft['contact_id'], $contributionsSumByContacts)) {
+        $contributionsSumByContacts[$contributionSoft['contact_id']] = [];
+        $contributionsSumByContacts[$contributionSoft['contact_id']]['total_amount'] = 0;
+      }
       $contributionsByContacts[$contributionSoft['contact_id']][] = $contributionSoft;
       $contributionsSumByContacts[$contributionSoft['contact_id']]['total_amount'] += $contributionSoft['total_amount'];
     }
@@ -130,19 +144,28 @@ class CRM_Paymentstatement_Utils {
     // Now check any contact have household contact, if present then get
     // household contact contribution and soft credit of household.
     if (!empty($relationshipTypes)) {
+      $relatedContactIds = [];
       foreach ($allContactIds as $contactId) {
-        [$houseHoldContactID, $houseHoldContributionsByContact,
-          $houseHoldContributionsSumByContact] = $this->getRelatedHouseHold($contactId, $relationshipTypes);
-        if ($houseHoldContactID && !empty($houseHoldContributionsByContact)) {
-          // If household contact have contribution then remove individual contact.
-          unset($contributionsByContacts[$contactId]);
-          unset($contributionsSumByContacts[$contactId]);
-          unset($allContactIds[$contactId]);
-          // Add household contact contribution contact.
-          $contributionsByContacts[$houseHoldContactID] = $houseHoldContributionsByContact[$houseHoldContactID];
-          $contributionsSumByContacts[$houseHoldContactID] = $houseHoldContributionsByContact[$houseHoldContactID];
-          $allContactIds[$houseHoldContactID] = $houseHoldContactID;
+        $relatedContacts = $this->getRelatedHouseHold($contactId, $relationshipTypes);
+        $unsetIndividualContact = FALSE;
+        foreach ($relatedContacts as $relatedContactId) {
+          [$houseHoldContributionsByContact, $houseHoldContributionsSumByContact] = $this->getContactContributionRecord($relatedContactId);
+          if (!empty($houseHoldContributionsByContact)) {
+            // Add household contact contribution contact.
+            $unsetIndividualContact = TRUE;
+            $contributionsByContacts[$relatedContactId] = $houseHoldContributionsByContact[$relatedContactId];
+            $contributionsSumByContacts[$relatedContactId] = $houseHoldContributionsSumByContact[$relatedContactId];
+            $relatedContactIds[$relatedContactId] = $relatedContactId;
+          }
+          if ($unsetIndividualContact) {
+            unset($contributionsByContacts[$contactId]);
+            unset($contributionsSumByContacts[$contactId]);
+            unset($allContactIds[$contactId]);
+          }
         }
+      }
+      if (!empty($relatedContactIds)) {
+        $allContactIds = array_merge($allContactIds, $relatedContactIds);
       }
     }
     // Get emails details those contact whose email is available.
@@ -181,15 +204,22 @@ class CRM_Paymentstatement_Utils {
       $htmlArray[$contactId] = $html;
     }
     $sharedContactID = $settings['paymentstatement_contact_id'] ?? NULL;
-    if (!empty($htmlArray)) {
+    $sharedActivityExist = FALSE;
+    if (!empty($sharedContactID)) {
       // If activity exist, no need to re-create again.
       if (!$this->checkPdfActivityExist($sharedContactID, 'shared')) {
-        // Created actiivty to shared pdf.
+        // Created activity to shared pdf.
+        foreach ($contactIDsForDownloadFile as $contactId) {
+          $contribution = $contributionsByContacts[$contactId];
+          [$html, $paymentStatementPdfFile] = $this->generatePdfStatementForContact($contactId, $contribution, $contributionsSumByContacts[$contactId]['total_amount'], TRUE);
+          $htmlArray[$contactId] = $html;
+        }
         $paymentStatementPdfFileShared = $this->createPDfActivity($sharedContactID, $htmlArray, 'shared');
         $this->generateEmailforPayment('shared', $sharedContactID, $htmlArray, $paymentStatementPdfFileShared);
       }
+      $sharedActivityExist = TRUE;
     }
-    return "Number of record processed $totalRecordAttempted, Created $processed, Skipped $skipped";
+    return "Number of record processed $totalRecordAttempted, Created $processed, Skipped $skipped, Shared PDF Activity Exist $sharedActivityExist";
   }
 
   private function checkPdfActivityExist($contactId, $type = 'email') {
@@ -211,7 +241,8 @@ class CRM_Paymentstatement_Utils {
   /**
    * @param $contactID
    *   Individual Contact ID.
-   * @return void
+   * @return $relatedContacts
+   *   Contact list.
    * @throws CRM_Core_Exception
    * @throws \Civi\API\Exception\UnauthorizedException
    */
@@ -222,12 +253,19 @@ class CRM_Paymentstatement_Utils {
       ->addWhere('is_active', '=', TRUE)
       ->addWhere('near_contact_id', '=', $contactID)
       ->setLimit(0)
-      ->execute();
-    $contributionsByContacts = $contributionsSumByContacts = [];
+      ->execute()->getArrayCopy();
+    $relatedContacts = [];
     foreach ($relationshipCaches as $relationshipCache) {
-      [$contributionsByContacts, $contributionsSumByContacts] = $this->getContactContributionRecord($relationshipCache['far_contact_id']);
+      if (!empty($relationshipCache['far_contact_id'])) {
+        $isDeleted = CRM_Core_DAO::getFieldValue('CRM_Contact_DAO_Contact', $relationshipCache['far_contact_id'], 'is_deleted', 'id');
+        // if contact is deleted then do not go further.
+        if ($isDeleted) {
+          continue;
+        }
+        $relatedContacts[$relationshipCache['far_contact_id']] = $relationshipCache['far_contact_id'];
+      }
     }
-    return [$relationshipCache['far_contact_id'], $contributionsByContacts, $contributionsSumByContacts];
+    return $relatedContacts;
   }
 
   /**
@@ -254,6 +292,13 @@ class CRM_Paymentstatement_Utils {
       ->execute()->getArrayCopy();
     $contributionsByContacts = $contributionsSumByContacts = [];
     foreach ($contributions as $contribution) {
+      if (!array_key_exists($contribution['contact_id'], $contributionsByContacts)) {
+        $contributionsByContacts[$contribution['contact_id']] = [];
+      }
+      if (!array_key_exists($contribution['contact_id'], $contributionsSumByContacts)) {
+        $contributionsSumByContacts[$contribution['contact_id']] = [];
+        $contributionsSumByContacts[$contribution['contact_id']]['total_amount'] = 0;
+      }
       $contributionsByContacts[$contribution['contact_id']][$contribution['id']] = $contribution;
       $contributionsSumByContacts[$contribution['contact_id']]['total_amount'] += $contribution['total_amount'];
     }
@@ -271,6 +316,13 @@ class CRM_Paymentstatement_Utils {
     foreach ($contributionSofts as $contributionSoft) {
       $contributionSoft['total_amount'] = $contributionSoft['amount'];
       $contributionSoft['receive_date'] = $contributionSoft['contribution.receive_date'];
+      if (!array_key_exists($contributionSoft['contact_id'], $contributionsByContacts)) {
+        $contributionsByContacts[$contributionSoft['contact_id']] = [];
+      }
+      if (!array_key_exists($contributionSoft['contact_id'], $contributionsSumByContacts)) {
+        $contributionsSumByContacts[$contributionSoft['contact_id']] = [];
+        $contributionsSumByContacts[$contributionSoft['contact_id']]['total_amount'] = 0;
+      }
       $contributionsByContacts[$contributionSoft['contact_id']][] = $contributionSoft;
       $contributionsSumByContacts[$contributionSoft['contact_id']]['total_amount'] += $contributionSoft['total_amount'];
     }
@@ -363,14 +415,19 @@ class CRM_Paymentstatement_Utils {
    *
    * @throws CRM_Core_Exception
    */
-  private function generatePdfStatementForContact($contactId, $contributions, $totalAmount) {
+  private function generatePdfStatementForContact($contactId, $contributions, $totalAmount, $htmlReturn = FALSE) {
     // Fetch contact details
     $contact = civicrm_api3('Contact', 'getsingle', ['id' => $contactId]);
     $address = CRM_Core_BAO_Address::getValues(['contact_id' => $contactId], TRUE);
     $address = reset($address);
-    $addressDisplay = $address['display_text'];
-    if (!empty($addressDisplay)) {
-      $addressDisplay = nl2br($addressDisplay);
+    if (is_array($address) && !empty($address['display_text'])) {
+      $addressDisplay = $address['display_text'];
+      if (!empty($addressDisplay)) {
+        $addressDisplay = nl2br($addressDisplay);
+      }
+    }
+    else {
+      $addressDisplay = 'No Address';
     }
     $settings = self::getSettings();
     if (!empty($settings['paymentstatement_custom_css'])) {
@@ -403,6 +460,10 @@ class CRM_Paymentstatement_Utils {
     }
 
     [$sent, $subject, $message, $html] = CRM_Core_BAO_MessageTemplate::sendTemplate($sendTemplateParams);
+    if ($htmlReturn) {
+      return [$html, []];
+    }
+
     $paymentStatementPdfFile = $this->createPDfActivity($contactId, $html);
 
     return [$html, $paymentStatementPdfFile];
@@ -413,7 +474,6 @@ class CRM_Paymentstatement_Utils {
     if ($type == 'shared') {
       $subject = 'Common: ' . $subject;
     }
-
     $activityDetail = $html;
     $paymentStatementPdfFile = [];
     if (!empty($html)) {
