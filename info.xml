@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <extension key="com.skvare.paymentstatement" type="module">
   <file>paymentstatement</file>
-  <name>Payment Statment</name>
-  <description>Payment Statment</description>
+  <name>Payment Statement</name>
+  <description>Payment Statement</description>
   <license>AGPL-3.0</license>
   <maintainer>
     <author>Sunil Pawar</author>

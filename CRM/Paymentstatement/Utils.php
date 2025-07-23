@@ -13,6 +13,8 @@ class CRM_Paymentstatement_Utils {
   var $_intitParams = [];
   var $_from = '';
   var $_to = '';
+  var $_totalFrom = '';
+  var $_totalTo = '';
 
   /**
    * @param string $type
@@ -27,6 +29,8 @@ class CRM_Paymentstatement_Utils {
     [$from, $to] = CRM_Utils_Date::getFromTo($period, '', '');
     $this->_from = $from;
     $this->_to = $to;
+    $this->_totalFrom = $from;
+    $this->_totalTo = $to;
     if ($type == 'year') {
       $this->_frequency = 'Yearly';
       $this->_type = 'year';
@@ -45,11 +49,11 @@ class CRM_Paymentstatement_Utils {
       ];
       $curMonth = date("m", strtotime($from));
       $curQuarter = ceil($curMonth / 3);
-      $this->_period = $quarter[$curQuarter];
+      $this->_period = date('Y', strtotime($from)) . ' - ' . $quarter[$curQuarter];
       $this->_paymentStartDate = date('F j, Y', strtotime($from));
       $this->_paymentEndDate = date('F j, Y', strtotime($to));
     }
-    elseif ($this == 'week') {
+    elseif ($type == 'week') {
       $this->_frequency = 'Weekly';
       $this->_type = 'week';
       $weekNumberOfMonth = ceil(date("j", strtotime($from)) / 7);
@@ -70,6 +74,8 @@ class CRM_Paymentstatement_Utils {
       $this->_period = date('Y', strtotime($from)) . ' - ' . date('F', strtotime($from));
       $this->_paymentStartDate = date('F j, Y', strtotime($from));
       $this->_paymentEndDate = date('F j, Y', strtotime($to));
+      $this->_totalFrom = date('Ymd000000', strtotime(date('Y-01-01')));
+      $this->_totalTo = $to;
     }
 
     $this->_intitParams = [
@@ -78,10 +84,14 @@ class CRM_Paymentstatement_Utils {
       'period' => $this->_period,
       'paymentStartDate' => $this->_paymentStartDate,
       'paymentEndDate' => $this->_paymentEndDate,
+      'currentDate' => date('l, F j, Y'),
     ];
     $settings = self::getSettings();
     if (!empty($settings['paymentstatement_default_email'])) {
       $this->_intitParams['paymentstatement_default_email'] = $settings['paymentstatement_default_email'];
+    }
+    if (!empty($settings['paymentstatement_default_email_cc'])) {
+      $this->_intitParams['paymentstatement_default_email_cc'] = $settings['paymentstatement_default_email_cc'];
     }
     $totalRecordAttempted = $processed = $skipped = 0;
     $domainValues = CRM_Core_BAO_Domain::getNameAndEmail();
@@ -89,11 +99,12 @@ class CRM_Paymentstatement_Utils {
     $relationshipTypes = $settings['paymentstatement_relationships'] ?? [];
     // Get all contributions for the current year
     $currentYear = date('Y');
-    $contributions = \Civi\Api4\Contribution::get(TRUE)
-      ->addSelect('id', 'contact_id', 'total_amount', 'receive_date')
+    $contributions = \Civi\Api4\Contribution::get(FALSE)
+      ->addSelect('id', 'contact_id', 'total_amount', 'receive_date', 'contact.contact_type')
       ->addJoin('Contact AS contact', 'INNER')
       ->addWhere('contribution_status_id', 'IN', [1, 8]) // Completed,// Partial.
       ->addWhere('contact.contact_type', '=', 'Individual')
+      ->addWhere('contact.is_deleted', '!=', TRUE)
       ->addWhere('is_test', '=', FALSE)
       ->addWhere('total_amount', '>', 0)
       ->addWhere('receive_date', 'BETWEEN', ["{$from}", "{$to}"])
@@ -101,48 +112,75 @@ class CRM_Paymentstatement_Utils {
       ->addOrderBy('receive_date', 'ASC')
       ->setLimit(0)
       ->execute()->getArrayCopy();
+
     $contributionsByContacts = $contributionsSumByContacts = [];
     foreach ($contributions as $contribution) {
       if (!array_key_exists($contribution['contact_id'], $contributionsByContacts)) {
         $contributionsByContacts[$contribution['contact_id']] = [];
       }
-      if (!array_key_exists($contribution['contact_id'], $contributionsSumByContacts)) {
-        $contributionsSumByContacts[$contribution['contact_id']] = [];
-        $contributionsSumByContacts[$contribution['contact_id']]['total_amount'] = 0;
-      }
       $contributionsByContacts[$contribution['contact_id']][$contribution['id']] = $contribution;
-      $contributionsSumByContacts[$contribution['contact_id']]['total_amount'] += $contribution['total_amount'];
+    }
+    // Get all contact ids.
+    $allContactDirectIds = array_keys($contributionsByContacts);
+    $paymentSumForDateRange = $this->getSumOfPayment($this->_totalFrom, $this->_totalTo, $allContactDirectIds);
+    foreach ($paymentSumForDateRange as $paymentSum) {
+      if (!array_key_exists($paymentSum['contact_id'], $contributionsSumByContacts)) {
+        $contributionsSumByContacts[$paymentSum['contact_id']] = [];
+        $contributionsSumByContacts[$paymentSum['contact_id']]['total_amount'] = 0;
+      }
+      $contributionsSumByContacts[$paymentSum['contact_id']]['total_amount'] += $paymentSum['total_Amount'];
     }
 
-    $contributionSofts = \Civi\Api4\ContributionSoft::get(TRUE)
-      ->addSelect('amount', 'contribution.receive_date', 'contribution.total_amount', 'contact_id')
+    CRM_Core_Error::debug_var('contributionsByContacts Direct', count($contributionsByContacts));
+
+    /*
+     // Comment this block as per https://projects.skvare.com/issues/24424#note-146
+    $contributionSofts = \Civi\Api4\ContributionSoft::get(FALSE)
+      ->addSelect('amount', 'contribution.receive_date', 'contribution.total_amount', 'contact_id', 'contact.contact_type')
       ->addJoin('Contribution AS contribution', 'INNER')
       ->addJoin('Contact AS contact', 'INNER', ['contact_id', '=', 'contact.id'])
       ->addWhere('contact.contact_type', '=', 'Individual')
+      ->addWhere('contact.is_deleted', '!=', TRUE)
       ->addWhere('contribution.is_test', '=', FALSE)
       ->addWhere('contribution.total_amount', '>', 0)
       ->addWhere('contribution.receive_date', 'BETWEEN', ["{$from}", "{$to}"])
       ->addWhere('contribution.contribution_status_id', 'IN', [1, 8]) // Completed,// Partial.
       ->setLimit(0)
       ->execute()->getArrayCopy();
+    CRM_Core_Error::debug_var('contributionSofts Direct', count($contributionSofts));
+    $softCreditContacts = [];
     foreach ($contributionSofts as $contributionSoft) {
       $contributionSoft['total_amount'] = $contributionSoft['amount'];
       $contributionSoft['receive_date'] = $contributionSoft['contribution.receive_date'];
+      $softCreditContacts[$contributionSoft['contact_id']] = $contributionSoft['contact_id'];
       if (!array_key_exists($contributionSoft['contact_id'], $contributionsByContacts)) {
         $contributionsByContacts[$contributionSoft['contact_id']] = [];
       }
-      if (!array_key_exists($contributionSoft['contact_id'], $contributionsSumByContacts)) {
-        $contributionsSumByContacts[$contributionSoft['contact_id']] = [];
-        $contributionsSumByContacts[$contributionSoft['contact_id']]['total_amount'] = 0;
-      }
       $contributionsByContacts[$contributionSoft['contact_id']][] = $contributionSoft;
-      $contributionsSumByContacts[$contributionSoft['contact_id']]['total_amount'] += $contributionSoft['total_amount'];
     }
-    // Get All contacts ids
+
+    // Get all contact ids.
+    if (!empty($softCreditContacts)) {
+      $paymentSoftCreditSumForDateRange = $this->getSumOfSoftCreditPayment($this->_totalFrom, $this->_totalTo, $softCreditContacts);
+      foreach ($paymentSoftCreditSumForDateRange as $paymentSoftCreditSum) {
+        if (!array_key_exists($paymentSoftCreditSum['contact_id'], $contributionsSumByContacts)) {
+          $contributionsSumByContacts[$paymentSoftCreditSum['contact_id']] = [];
+          $contributionsSumByContacts[$paymentSoftCreditSum['contact_id']]['total_amount'] = 0;
+        }
+        $contributionsSumByContacts[$paymentSoftCreditSum['contact_id']]['total_amount'] += $paymentSoftCreditSum['total_Amount'];
+      }
+    }
+
+    CRM_Core_Error::debug_var('$contributionsByContacts + Soft Credit : Direct', count($contributionsByContacts));
+    */
     $allContactIds = array_keys($contributionsByContacts);
+    // Get All contacts ids
+    CRM_Core_Error::debug_var('allContactIds : Direct', count($allContactIds));
     $allContactIds = array_combine($allContactIds, $allContactIds);
     // Now check any contact have household contact, if present then get
     // household contact contribution and soft credit of household.
+
+    CRM_Core_Error::debug_log_message('Check Relationship Details for each contact');
     if (!empty($relationshipTypes)) {
       $relatedContactIds = [];
       foreach ($allContactIds as $contactId) {
@@ -168,58 +206,157 @@ class CRM_Paymentstatement_Utils {
         $allContactIds = array_merge($allContactIds, $relatedContactIds);
       }
     }
+
+    CRM_Core_Error::debug_var('After relationship check allContactIds count', count($allContactIds));
     // Get emails details those contact whose email is available.
     $contactEmails = $this->getContactEmails($allContactIds);
     // Get contact ids for which email only.
     $contactIDswithEmail = array_keys($contactEmails);
-    // Get Contact whose email is not availble.
+    CRM_Core_Error::debug_var('After relationship check contactIDswithEmail count', count($contactIDswithEmail));
+    // Get Contact whose email is not available.
     $contactIDsForDownloadFile = array_diff($allContactIds, $contactIDswithEmail);
+    $contactIDsForDownloadFile = array_values($contactIDsForDownloadFile);
+    $contactIDsForDownloadFile = array_combine($contactIDsForDownloadFile, $contactIDsForDownloadFile);
     $this->_pdfFormat = CRM_Core_BAO_MessageTemplate::getPDFFormatForTemplate('contribution_invoice_receipt');
-
+    CRM_Core_Error::debug_var('After array diff contactIDswithEmail Count', count($contactIDswithEmail));
     // First send email to contact who has email.
+    $skippedContactIDs = [];
+
+    // Sort the contribution by date.
+    foreach ($contributionsByContacts as &$contributionsToSort) {
+      usort($contributionsToSort, function ($a, $b) {
+        $t1 = strtotime($a['receive_date']);
+        $t2 = strtotime($b['receive_date']);
+        return $t1 - $t2;
+      });
+    }
+
+    CRM_Core_Error::debug_log_message('Iterate contact with email address only and create a PDF and email activity.');
     foreach ($contactIDswithEmail as $contactId) {
       $totalRecordAttempted++;
       // If activity exist, no need to re-create again.
       if ($this->checkPdfActivityExist($contactId)) {
         $skipped++;
+        $skippedContactIDs[$contactId] = $contactId;
         continue;
       }
       $processed++;
       $contribution = $contributionsByContacts[$contactId];
-      [$html, $paymentStatementPdfFile] = $this->generatePdfStatementForContact($contactId, $contribution, $contributionsSumByContacts[$contactId]['total_amount']);
-      $this->generateEmailforPayment('email', $contactId, $html, $paymentStatementPdfFile);
+      [$html, $paymentStatementPdfFile, $activityPdfResult] = $this->generatePdfStatementForContact($contactId, $contribution, $contributionsSumByContacts[$contactId]['total_amount']);
+      $this->generateEmailforPayment('email', $contactId, $html, $activityPdfResult, $paymentStatementPdfFile);
     }
-    // Generate PDF for contact who has no email.
-    $htmlArray = [];
+    CRM_Core_Error::debug_var('Processed count with email', $processed);
+    CRM_Core_Error::debug_var('Skipped count with email', $skipped);
+    /*
+    CRM_Core_Error::debug_var('Skipped contact with email', $skippedContactIDs);
+    */
+
+    CRM_Core_Error::debug_log_message('Iterate contact with without email, create a PDF and email activity.');
+    CRM_Core_Error::debug_var('contactIDsForDownloadFile', count($contactIDsForDownloadFile));
+    $contactGetEmailFromHeadOfHouseHold = [];
     foreach ($contactIDsForDownloadFile as $contactId) {
       $totalRecordAttempted++;
       $contribution = $contributionsByContacts[$contactId];
       // If activity exist, no need to re-create again.
       if ($this->checkPdfActivityExist($contactId)) {
         $skipped++;
+        $skippedContactIDs[$contactId] = $contactId;
+        $contactType = CRM_Contact_BAO_Contact::getContactType($contactId);
+        if ($contactType == 'Household') {
+          $headOfHouseHoldContactIds = $this->getHeadOfHouseHold($contactId);
+          if (!empty($headOfHouseHoldContactIds)) {
+            unset($contactIDsForDownloadFile[$contactId]);
+          }
+        }
         continue;
       }
       $processed++;
-      [$html, $paymentStatementPdfFile] = $this->generatePdfStatementForContact($contactId, $contribution, $contributionsSumByContacts[$contactId]['total_amount']);
-      $htmlArray[$contactId] = $html;
+
+      [$html, $paymentStatementPdfFile, $activityPdfResult] = $this->generatePdfStatementForContact($contactId, $contribution, $contributionsSumByContacts[$contactId]['total_amount']);
+      $contactType = CRM_Contact_BAO_Contact::getContactType($contactId);
+      if ($contactType == 'Household' && !empty($paymentStatementPdfFile)) {
+        $headOfHouseHoldContactIds = $this->getHeadOfHouseHold($contactId);
+        if (!empty($headOfHouseHoldContactIds)) {
+          $contactGetEmailFromHeadOfHouseHold[$contactId] = $headOfHouseHoldContactIds;
+          $this->generateEmailforPayment('email', $contactId, $html, $activityPdfResult, $paymentStatementPdfFile, $headOfHouseHoldContactIds);
+          unset($contactIDsForDownloadFile[$contactId]);
+        }
+      }
     }
+    CRM_Core_Error::debug_var('Processed count after NO email', $processed);
+    CRM_Core_Error::debug_var('Skipped count after NO email', $skipped);
+    /*
+    CRM_Core_Error::debug_var('Skipped contact after NO email', $skippedContactIDs);
+    */
+    CRM_Core_Error::debug_var('contactGetEmailFromHeadOfHouseHold count', count($contactGetEmailFromHeadOfHouseHold));
+    //CRM_Core_Error::debug_var('contactGetEmailFromHeadOfHouseHold', $contactGetEmailFromHeadOfHouseHold);
     $sharedContactID = $settings['paymentstatement_contact_id'] ?? NULL;
-    $sharedActivityExist = FALSE;
+    // Generate PDF for contact who has no email.
+    $htmlArray = [];
+    $sharedActivityExist = 'No';
     if (!empty($sharedContactID)) {
+      // unset contact id for which email is available.
+      CRM_Core_Error::debug_log_message('Unset the contact ID for which email is available through the relationship.');
+      foreach ($contactIDsForDownloadFile as $contactId) {
+        if (array_key_exists($contactId, $contactGetEmailFromHeadOfHouseHold)) {
+          unset($contactIDsForDownloadFile[$contactId]);
+        }
+      }
+      CRM_Core_Error::debug_var('contactIDsForDownloadFile Count after unset', count($contactIDsForDownloadFile));
       // If activity exist, no need to re-create again.
-      if (!$this->checkPdfActivityExist($sharedContactID, 'shared')) {
+      if (!empty($contactIDsForDownloadFile) && !$this->checkPdfActivityExist($sharedContactID, 'shared')) {
+        CRM_Core_Error::debug_log_message('Generate Shared PDF HTML');
         // Created activity to shared pdf.
         foreach ($contactIDsForDownloadFile as $contactId) {
           $contribution = $contributionsByContacts[$contactId];
           [$html, $paymentStatementPdfFile] = $this->generatePdfStatementForContact($contactId, $contribution, $contributionsSumByContacts[$contactId]['total_amount'], TRUE);
           $htmlArray[$contactId] = $html;
         }
-        $paymentStatementPdfFileShared = $this->createPDfActivity($sharedContactID, $htmlArray, 'shared');
-        $this->generateEmailforPayment('shared', $sharedContactID, $htmlArray, $paymentStatementPdfFileShared);
+        CRM_Core_Error::debug_log_message('Generate Shared PDF file and activity');
+        [$paymentStatementPdfFileShared, $activityPdfResult] = $this->createPDfActivity($sharedContactID, $htmlArray, 'shared');
+        CRM_Core_Error::debug_log_message('Generated Shared Email');
+        $this->generateEmailforPayment('shared', $sharedContactID, $htmlArray, $activityPdfResult, $paymentStatementPdfFileShared);
+        $sharedActivityExist = 'Yes';
       }
-      $sharedActivityExist = TRUE;
+      else {
+        CRM_Core_Error::debug_log_message('Common PDF not generated');
+      }
     }
-    return "Number of record processed $totalRecordAttempted, Created $processed, Skipped $skipped, Shared PDF Activity Exist $sharedActivityExist";
+    CRM_Core_Error::debug_log_message('Process completed...');
+    return "Number of record processed $totalRecordAttempted, Created $processed, Skipped $skipped, Shared PDF Activity created: $sharedActivityExist";
+  }
+
+
+  private function getSumOfPayment($from, $to, $contactIDs = []) {
+    $contributionSums = \Civi\Api4\Contribution::get(FALSE)
+      ->addSelect('contact_id', 'SUM(total_amount) AS total_Amount')
+      ->addWhere('contribution_status_id', 'IN', [1, 8]) // Completed,// Partial.
+      ->addWhere('contact_id', 'IN', $contactIDs)
+      ->addWhere('is_test', '=', FALSE)
+      ->addWhere('total_amount', '>', 0)
+      ->addWhere('receive_date', 'BETWEEN', ["{$from}", "{$to}"])
+      ->addGroupBy('contact_id')
+      ->setLimit(0)
+      ->execute()->getArrayCopy();
+
+    return $contributionSums;
+  }
+
+  private function getSumOfSoftCreditPayment($from, $to, $contactIDs = []) {
+    $contributionSoftsSums = \Civi\Api4\ContributionSoft::get(FALSE)
+      ->addSelect('contact_id', 'SUM(amount) AS total_Amount')
+      ->addJoin('Contribution AS contribution', 'INNER')
+      ->addJoin('Contact AS contact', 'INNER', ['contact_id', '=', 'contact.id'])
+      ->addWhere('contact_id', 'IN', $contactIDs)
+      ->addWhere('contact.is_deleted', '!=', TRUE)
+      ->addWhere('contribution.is_test', '=', FALSE)
+      ->addWhere('contribution.total_amount', '>', 0)
+      ->addWhere('contribution.receive_date', 'BETWEEN', ["{$from}", "{$to}"])
+      ->addWhere('contribution.contribution_status_id', 'IN', [1, 8]) // Completed,// Partial.
+      ->addGroupBy('contact_id')
+      ->setLimit(0)
+      ->execute()->getArrayCopy();
+    return $contributionSoftsSums;
   }
 
   private function checkPdfActivityExist($contactId, $type = 'email') {
@@ -238,6 +375,22 @@ class CRM_Paymentstatement_Utils {
     return FALSE;
   }
 
+  private function checkEmailActivityExist($contactId, $type = 'email') {
+    $subject = $this->_frequency . ' Statement ' . $this->_period;
+    if ($type == 'shared') {
+      $subject = 'Common: ' . $subject;
+    }
+    $result = civicrm_api3('Activity', 'getcount', [
+      'activity_type_id' => "Email",
+      'subject' => $subject,
+      'source_contact_id' => $contactId,
+    ]);
+    if ($result) {
+      return TRUE;
+    }
+    return FALSE;
+  }
+
   /**
    * @param $contactID
    *   Individual Contact ID.
@@ -247,7 +400,7 @@ class CRM_Paymentstatement_Utils {
    * @throws \Civi\API\Exception\UnauthorizedException
    */
   private function getRelatedHouseHold($contactID, $relationshipTypes = []) {
-    $relationshipCaches = \Civi\Api4\RelationshipCache::get(TRUE)
+    $relationshipCaches = \Civi\Api4\RelationshipCache::get(FALSE)
       ->addSelect('far_contact_id')
       ->addWhere('relationship_type_id', 'IN', $relationshipTypes)
       ->addWhere('is_active', '=', TRUE)
@@ -268,6 +421,25 @@ class CRM_Paymentstatement_Utils {
     return $relatedContacts;
   }
 
+  private function getHeadOfHouseHold($contactID) {
+    $relationshipCaches = \Civi\Api4\RelationshipCache::get(FALSE)
+      ->addSelect('far_contact_id')
+      ->addWhere('near_contact_id', '=', $contactID)
+      ->addWhere('relationship_type_id', '=', 7)
+      ->addWhere('is_active', '=', TRUE)
+      ->setLimit(25)
+      ->execute();
+    $headHouseHold = [];
+    foreach ($relationshipCaches as $relationshipCache) {
+      $emailPrimary = CRM_Contact_BAO_Contact::getPrimaryEmail($relationshipCache['far_contact_id']);
+      if ($emailPrimary) {
+        $headHouseHold[] = $relationshipCache['far_contact_id'];
+      }
+    }
+    $headHouseHold = array_values(array_unique($headHouseHold));
+    return $headHouseHold;
+  }
+
   /**
    * Get Contribution Record for Contact.
    * @param int $contactID
@@ -279,8 +451,9 @@ class CRM_Paymentstatement_Utils {
   private function getContactContributionRecord($contactID) {
     $from = $this->_from;
     $to = $this->_to;
-    $contributions = \Civi\Api4\Contribution::get(TRUE)
-      ->addSelect('id', 'contact_id', 'total_amount', 'receive_date')
+    $contributions = \Civi\Api4\Contribution::get(FALSE)
+      ->addSelect('id', 'contact_id', 'total_amount', 'receive_date', 'contact.contact_type')
+      ->addJoin('Contact AS contact', 'INNER', ['contact_id', '=', 'contact.id'])
       ->addWhere('contribution_status_id', 'IN', [1, 8]) // Completed,// Partial.
       ->addWhere('is_test', '=', FALSE)
       ->addWhere('total_amount', '>', 0)
@@ -290,22 +463,28 @@ class CRM_Paymentstatement_Utils {
       ->addOrderBy('receive_date', 'ASC')
       ->setLimit(0)
       ->execute()->getArrayCopy();
+
     $contributionsByContacts = $contributionsSumByContacts = [];
     foreach ($contributions as $contribution) {
       if (!array_key_exists($contribution['contact_id'], $contributionsByContacts)) {
         $contributionsByContacts[$contribution['contact_id']] = [];
       }
-      if (!array_key_exists($contribution['contact_id'], $contributionsSumByContacts)) {
-        $contributionsSumByContacts[$contribution['contact_id']] = [];
-        $contributionsSumByContacts[$contribution['contact_id']]['total_amount'] = 0;
-      }
       $contributionsByContacts[$contribution['contact_id']][$contribution['id']] = $contribution;
-      $contributionsSumByContacts[$contribution['contact_id']]['total_amount'] += $contribution['total_amount'];
     }
+    $relatedContactIds = [$contactID];
 
-    $contributionSofts = \Civi\Api4\ContributionSoft::get(TRUE)
-      ->addSelect('amount', 'contribution.receive_date', 'contribution.total_amount', 'contact_id')
+    $paymentSumForDateRange = $this->getSumOfPayment($this->_totalFrom, $this->_totalTo, $relatedContactIds);
+    foreach ($paymentSumForDateRange as $paymentSum) {
+      if (!array_key_exists($paymentSum['contact_id'], $contributionsSumByContacts)) {
+        $contributionsSumByContacts[$paymentSum['contact_id']] = [];
+        $contributionsSumByContacts[$paymentSum['contact_id']]['total_amount'] = 0;
+      }
+      $contributionsSumByContacts[$paymentSum['contact_id']]['total_amount'] += $paymentSum['total_Amount'];
+    }
+    $contributionSofts = \Civi\Api4\ContributionSoft::get(FALSE)
+      ->addSelect('amount', 'contribution.receive_date', 'contribution.total_amount', 'contact_id' ,'contact.contact_type')
       ->addJoin('Contribution AS contribution', 'INNER')
+      ->addJoin('Contact AS contact', 'INNER', ['contact_id', '=', 'contact.id'])
       ->addWhere('contribution.is_test', '=', FALSE)
       ->addWhere('contact_id', '=', $contactID)
       ->addWhere('contribution.total_amount', '>', 0)
@@ -313,34 +492,57 @@ class CRM_Paymentstatement_Utils {
       ->addWhere('contribution.contribution_status_id', 'IN', [1, 8]) // Completed,// Partial.
       ->setLimit(0)
       ->execute()->getArrayCopy();
+
+    $softCreditContacts = [];
     foreach ($contributionSofts as $contributionSoft) {
       $contributionSoft['total_amount'] = $contributionSoft['amount'];
       $contributionSoft['receive_date'] = $contributionSoft['contribution.receive_date'];
+      $softCreditContacts[$contributionSoft['contact_id']] = $contributionSoft['contact_id'];
       if (!array_key_exists($contributionSoft['contact_id'], $contributionsByContacts)) {
         $contributionsByContacts[$contributionSoft['contact_id']] = [];
       }
-      if (!array_key_exists($contributionSoft['contact_id'], $contributionsSumByContacts)) {
-        $contributionsSumByContacts[$contributionSoft['contact_id']] = [];
-        $contributionsSumByContacts[$contributionSoft['contact_id']]['total_amount'] = 0;
-      }
       $contributionsByContacts[$contributionSoft['contact_id']][] = $contributionSoft;
-      $contributionsSumByContacts[$contributionSoft['contact_id']]['total_amount'] += $contributionSoft['total_amount'];
+    }
+    // Get all contact ids.
+    if (!empty($softCreditContacts)) {
+      $paymentSoftCreditSumForDateRange = $this->getSumOfSoftCreditPayment($this->_totalFrom, $this->_totalTo, $relatedContactIds);
+      foreach ($paymentSoftCreditSumForDateRange as $paymentSoftCreditSum) {
+        if (!array_key_exists($paymentSoftCreditSum['contact_id'], $contributionsSumByContacts)) {
+          $contributionsSumByContacts[$paymentSoftCreditSum['contact_id']] = [];
+          $contributionsSumByContacts[$paymentSoftCreditSum['contact_id']]['total_amount'] = 0;
+        }
+        $contributionsSumByContacts[$paymentSoftCreditSum['contact_id']]['total_amount'] += $paymentSoftCreditSum['total_Amount'];
+      }
     }
     return [$contributionsByContacts, $contributionsSumByContacts];
   }
 
   /**
    * Generate Email for Payment Statement.
-   *
-   * @param string $type
-   * @param int $contactId
-   * @param string $html
+   * @param $type
+   * @param $contactId
+   * @param $html
+   * @param $activityPdfResult
+   * @param $paymentStatementPdfFile
+   * @param $ccContactIds
    * @return void
-   * @throws CRM_Core_Exception
    */
-  private function generateEmailforPayment($type = 'shared', $contactId = NULL, $html = '', $paymentStatementPdfFile = '') {
+  private function generateEmailforPayment($type = 'shared', $contactId = NULL, $html = '', $activityPdfResult = [], $paymentStatementPdfFile = '', $ccContactIds = []) {
+    static $sendCount = 0;
+    static $totalEmailSent = 0;
+    // Wait for 10ms before sending next email.
+    usleep(10000);
+    if ($sendCount >= 50) {
+      $sendCount = 0;
+      CRM_Core_Error::debug_log_message('Total Email sent: ' . $totalEmailSent);
+    }
     $pdfFileName = $this->_frequency . '_Statement_' . $this->_type . '_' . rand() . '.pdf';
     $email = NULL;
+    $sourceContactID = $contactId;
+    $ccContactIdsOriginal = $ccContactIds;
+    if ($ccContactIds) {
+      $contactId = array_shift($ccContactIds);
+    }
     if ($contactId) {
       $email = CRM_Contact_BAO_Contact::getPrimaryEmail($contactId);
     }
@@ -356,23 +558,38 @@ class CRM_Paymentstatement_Utils {
     ];
     $sendTemplateParams['from'] = $this->_intitParams['from'];
     $sendTemplateParams['toEmail'] = $email ?? $this->_intitParams['paymentstatement_default_email'];
+    // If email is share  then cc to default cc email.
+    if ($type == 'shared' && !empty($this->_intitParams['paymentstatement_default_email_cc'])) {
+      $sendTemplateParams['cc'] = $this->_intitParams['paymentstatement_default_email_cc'];
+    }
+    else {
+      if (!empty($ccContactIds)) {
+        $ccEmails = [];
+        foreach ($ccContactIds as $ccContactId) {
+          $ccEmails[] = CRM_Contact_BAO_Contact::getPrimaryEmail($ccContactId);
+        }
+        $sendTemplateParams['cc'] = implode(',', $ccEmails);
+      }
+    }
     if (empty($sendTemplateParams['attachments'])) {
       $sendTemplateParams['attachments'] = [];
     }
     if ($contactId && !empty($paymentStatementPdfFile)) {
       // $paymentStatementPdfFile = $paymentStatementPdfFile;
-      // attachment file is already availbale.
+      // attachment file is already available.
     }
     else {
       $paymentStatementPdfFile = CRM_Utils_Mail::appendPDF($pdfFileName, $html, $this->_pdfFormat);
     }
     $sendTemplateParams['attachments'][] = $paymentStatementPdfFile;
     [$sent, $subject, $message, $html] = CRM_Core_BAO_MessageTemplate::sendTemplate($sendTemplateParams);
+    $sendCount++;
+    $totalEmailSent++;
     if ($sent && $contactId) {
       // Create Activity for Payment Printing..., Attached PDF to Activity.
-      $subject = $this->_frequency . ' Payment Statement ' . $this->_period;
+      $subject = $this->_frequency . ' Statement ' . $this->_period;
       if ($type == 'shared') {
-        $subject .= ' (Common PDF)';
+        $subject = 'Common: ' . $subject;
       }
       $activityDetail = '';
       if (!empty($html)) {
@@ -383,19 +600,37 @@ class CRM_Paymentstatement_Utils {
       }
       $activityParams = [
         'subject' => $subject,
-        'source_contact_id' => $contactId,
+        'source_contact_id' => $sourceContactID,
         'target_contact_id' => $contactId,
         'activity_type_id' => CRM_Core_PseudoConstant::getKey('CRM_Activity_BAO_Activity', 'activity_type_id', 'Email'),
         'activity_date_time' => date('YmdHis'),
         'details' => $activityDetail,
       ];
-
+      // Keep all Head of house as target contact.
+      if (!empty($ccContactIdsOriginal)) {
+        $activityParams['target_contact_id'] = $ccContactIdsOriginal;
+      }
       try {
         $result = civicrm_api3('activity', 'create', $activityParams);
       }
       catch (Exception $e) {
         CRM_Core_Error::debug_var('FAILED : print activity Result', $e->getMessage(), FALSE, TRUE, 'com.skvare.paymentstatement');
       }
+    }
+    else {
+      CRM_Core_Error::debug_log_message("Email stopped");
+      CRM_Core_Error::debug_log_message('Total Email sent: ' . $totalEmailSent);
+      CRM_Core_Error::debug_var('sendTemplateParams', $sendTemplateParams);
+      // delete pdf activity on the contact.
+      // this is to make sure email sent with pdf attachment.
+      if (!empty($activityPdfResult)) {
+        $activityId = $activityPdfResult['id'];
+        if ($activityId) {
+          CRM_Core_Error::debug_log_message("Deleting PDF Activity ID {$activityId} for contact id {$sourceContactID}");
+          civicrm_api3('Activity', 'delete', ['id' => $activityId]);
+        }
+      }
+      exit;
     }
   }
 
@@ -430,11 +665,6 @@ class CRM_Paymentstatement_Utils {
       $addressDisplay = 'No Address';
     }
     $settings = self::getSettings();
-    if (!empty($settings['paymentstatement_custom_css'])) {
-      $customCss = $settings['paymentstatement_custom_css'];
-      CRM_Core_Region::instance('export-document-header')->add(['style' => "{$customCss}"]);
-    }
-
     $sendTemplateParams = [
       'workflow' => 'payment_statement',
       'tplParams' => array_merge([
@@ -461,21 +691,29 @@ class CRM_Paymentstatement_Utils {
 
     [$sent, $subject, $message, $html] = CRM_Core_BAO_MessageTemplate::sendTemplate($sendTemplateParams);
     if ($htmlReturn) {
-      return [$html, []];
+      return [$html, [], []];
     }
 
-    $paymentStatementPdfFile = $this->createPDfActivity($contactId, $html);
+    [$paymentStatementPdfFile, $activityPdfResult] = $this->createPDfActivity($contactId, $html);
 
-    return [$html, $paymentStatementPdfFile];
+    return [$html, $paymentStatementPdfFile, $activityPdfResult];
   }
 
+  /**
+   * Create PDF activity.
+   *
+   * @param $contactId
+   * @param $html
+   * @param $type
+   * @return array|array[]
+   */
   private function createPDfActivity($contactId, $html, $type = 'email') {
     $subject = $this->_frequency . ' Statement ' . $this->_period;
     if ($type == 'shared') {
       $subject = 'Common: ' . $subject;
     }
     $activityDetail = $html;
-    $paymentStatementPdfFile = [];
+    $paymentStatementPdfFile = $activityResult = [];
     if (!empty($html)) {
       if ($type == 'shared') {
         $activityDetail = 'Shared PDF';
@@ -519,15 +757,15 @@ class CRM_Paymentstatement_Utils {
         ];
       }
       try {
-        $result = civicrm_api3('activity', 'create', $activityParams);
+        $activityResult = civicrm_api3('activity', 'create', $activityParams);
       }
       catch (Exception $e) {
         CRM_Core_Error::debug_var('FAILED : print activity Result', $e->getMessage(), FALSE, TRUE, 'com.skvare.paymentstatement');
       }
 
-      return $paymentStatementPdfFile;
+      return [$paymentStatementPdfFile, $activityResult];
     }
-    return $paymentStatementPdfFile;
+    return [$paymentStatementPdfFile, $activityResult];
   }
 
   /**
@@ -578,7 +816,7 @@ class CRM_Paymentstatement_Utils {
     $domainID = CRM_Core_Config::domainID();
     $settings = Civi::settings($domainID);
     $mainSettings = [];
-    $elementNames = ['paymentstatement_logo', 'paymentstatement_custom_css', 'paymentstatement_default_email', 'paymentstatement_contact_id', 'paymentstatement_relationships'];
+    $elementNames = ['paymentstatement_logo', 'paymentstatement_default_email_cc', 'paymentstatement_default_email', 'paymentstatement_contact_id', 'paymentstatement_relationships'];
     foreach ($elementNames as $elementName) {
       $mainSettings[$elementName] = $settings->get($elementName);
     }
@@ -635,6 +873,5 @@ class CRM_Paymentstatement_Utils {
 
     return $relationshipTypes;
   }
-
 
 }

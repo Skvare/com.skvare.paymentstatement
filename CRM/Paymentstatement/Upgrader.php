@@ -21,8 +21,8 @@ class CRM_Paymentstatement_Upgrader extends \CRM_Extension_Upgrader_Base {
     try {
       $optionGroup = civicrm_api3('OptionGroup', 'create', [
         'name' => 'msg_tpl_workflow_payment_statement',
-        'title' => ts("Message Template Workflow for Payment Statment", ['domain' => 'com.skvare.paymentstatement']),
-        'description' => ts("Message Template Workflow for Payment Statment", ['domain' => 'com.skvare.paymentstatement']),
+        'title' => ts("Message Template Workflow for Payment Statement", ['domain' => 'com.skvare.paymentstatement']),
+        'description' => ts("Message Template Workflow for Payment Statement", ['domain' => 'com.skvare.paymentstatement']),
         'is_reserved' => 1,
         'is_active' => 1,
       ]);
@@ -39,16 +39,16 @@ class CRM_Paymentstatement_Upgrader extends \CRM_Extension_Upgrader_Base {
 
     $msgTpls = [
       [
-        'description' => ts('Payment Statment', ['domain' => 'com.skvare.paymentstatement']),
-        'label' => ts('Payment Statment', ['domain' => 'com.skvare.paymentstatement']),
+        'description' => ts('Contribution Statement - PDF', ['domain' => 'com.skvare.paymentstatement']),
+        'label' => ts('Contribution Statement - PDF', ['domain' => 'com.skvare.paymentstatement']),
         'name' => 'payment_statement',
-        'subject' => ts("Payment Statment", ['domain' => 'com.skvare.paymentstatement']),
+        'subject' => ts("Thank You for Your Contribution", ['domain' => 'com.skvare.paymentstatement']),
       ],
       [
-        'description' => ts('Payment Statment Email', ['domain' => 'com.skvare.paymentstatement']),
-        'label' => ts('Payment Statment Email body', ['domain' => 'com.skvare.paymentstatement']),
+        'description' => ts('Contribution Statement - Email', ['domain' => 'com.skvare.paymentstatement']),
+        'label' => ts('Contribution Statement - Email', ['domain' => 'com.skvare.paymentstatement']),
         'name' => 'payment_statement_email',
-        'subject' => '{$frequency} Payment Statement for {$period}',
+        'subject' => '{$frequency} Contribution Statement for {$period}',
       ],
     ];
 

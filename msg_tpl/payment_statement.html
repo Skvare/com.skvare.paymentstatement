@@ -11,10 +11,13 @@
     </table>
   </div>
 
-  <p>Date: {$smarty.now|date_format}</p>
-  <p>Dear {contact.addressee_display},</p>
-  <p>{$address}</p>
-  <p>Thank you for partnering with the AFC to support and challenge families to grow in holines, grow in th truth, and grow together in Christ. Your contributions this past {$type}, noted below, are greatly appreicated. May the Holy Family richely bless you for your sacrifices.</p>
+  <p>{$currentDate}</p>
+  <p>{contact.addressee_display}<br>
+    {contact.street_address}{if {contact.supplemental_address_1|boolean}}{, }{contact.supplemental_address_1}{/if}<br>
+    {contact.city}{, }{contact.state_province}{ }{contact.postal_code}<br>
+  </p>
+  <p>Dear {contact.postal_greeting_display},</p>
+  <p>Thank you for partnering with the ORGNAME. Your contributions, noted below, are greatly appreciated.</p>
 
   <table class="table" style="width: 500px;" border="1" cellspacing="0" cellpadding="2" align="left">
     <tr>
@@ -23,15 +26,15 @@
     </tr>
     {foreach from=$contributions item=contribution}
     <tr>
-      <td>{$contribution.receive_date|crmDate}</td>
+      <td>{$contribution.receive_date|date_format:'F j, Y'}</td>
       <td>{$contribution.total_amount|crmMoney}</td>
     </tr>
     {/foreach}
   </table>
 
-  <p>Total Amount : {$totalAmount|crmMoney}</p>
-  <p>If you have any questions, please call (800) FOR-MARY or (740) 567-7700 or email development@afc.org. Glod bless!</p>
+  <p>Year-to-Date Total : {$totalAmount|crmMoney}</p>
+  <p>If you have any questions, please call ON PHONE_NUMBER or email info@ORGNAME.org.</p>
   <p>&nbsp;</p>
   <hr>
-  <p><sub>The Apostolate for Family Consecration is a 501(c) non-profit organization (EIN: 51-0162721). Other than the intangible spiritual benefit, the donor received no goods or services in exchange for the contribution listed above.</sub></p>
+  <p><sub>SUBNOTE</sub></p>
 </div>
